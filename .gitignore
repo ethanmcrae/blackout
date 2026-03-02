@@ -1,0 +1,16 @@
+# Build artifacts
+.build/
+Blackout.app/
+DerivedData/
+*.xcworkspace
+
+# Xcode user data
+xcuserdata/
+*.xcuserdatad
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved

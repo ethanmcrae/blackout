@@ -1,0 +1,229 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AAA00001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00001; };
+		AAA00002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00002; };
+		AAA00003 /* OverlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00003; };
+		AAA00004 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00004; };
+		AAA00005 /* SetupWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00005; };
+		AAA00006 /* SleepPrevention.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00006; };
+		AAA00007 /* PasswordMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB00008; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		BBB00001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		BBB00002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		BBB00003 /* OverlayManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayManager.swift; sourceTree = "<group>"; };
+		BBB00004 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		BBB00005 /* SetupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWindowController.swift; sourceTree = "<group>"; };
+		BBB00006 /* SleepPrevention.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepPrevention.swift; sourceTree = "<group>"; };
+		BBB00007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BBB00008 /* PasswordMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasswordMatcher.swift; sourceTree = "<group>"; };
+		CCC00001 /* Blackout.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Blackout.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		DDD00001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		EEE00001 = {
+			isa = PBXGroup;
+			children = (
+				EEE00002 /* Blackout */,
+				EEE00003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		EEE00002 /* Blackout */ = {
+			isa = PBXGroup;
+			children = (
+				BBB00001 /* main.swift */,
+				BBB00002 /* AppDelegate.swift */,
+				BBB00003 /* OverlayManager.swift */,
+				BBB00004 /* HotkeyManager.swift */,
+				BBB00005 /* SetupWindowController.swift */,
+				BBB00006 /* SleepPrevention.swift */,
+				BBB00008 /* PasswordMatcher.swift */,
+				BBB00007 /* Info.plist */,
+			);
+			path = Blackout;
+			sourceTree = "<group>";
+		};
+		EEE00003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				CCC00001 /* Blackout.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FFF00001 /* Blackout */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = GGG00003 /* Build configuration list for PBXNativeTarget "Blackout" */;
+			buildPhases = (
+				FFF00002 /* Sources */,
+				DDD00001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Blackout;
+			productName = Blackout;
+			productReference = CCC00001 /* Blackout.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		HHH00001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = GGG00001 /* Build configuration list for PBXProject "Blackout" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = EEE00001;
+			productRefGroup = EEE00003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FFF00001 /* Blackout */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FFF00002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AAA00001 /* main.swift in Sources */,
+				AAA00002 /* AppDelegate.swift in Sources */,
+				AAA00003 /* OverlayManager.swift in Sources */,
+				AAA00004 /* HotkeyManager.swift in Sources */,
+				AAA00005 /* SetupWindowController.swift in Sources */,
+				AAA00006 /* SleepPrevention.swift in Sources */,
+				AAA00007 /* PasswordMatcher.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		GGG00004 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		GGG00005 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		GGG00006 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = Blackout/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.Blackout;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		GGG00007 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = Blackout/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.Blackout;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		GGG00001 /* Build configuration list for PBXProject "Blackout" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				GGG00004 /* Debug */,
+				GGG00005 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		GGG00003 /* Build configuration list for PBXNativeTarget "Blackout" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				GGG00006 /* Debug */,
+				GGG00007 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = HHH00001 /* Project object */;
+}
