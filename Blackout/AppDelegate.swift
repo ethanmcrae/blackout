@@ -9,16 +9,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Menu items that need updating
     private var activateMenuItem: NSMenuItem!
+    private var tripleEscapeMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
 
     // Password mode state
     private var unlockMode: String = "hotkey" // "hotkey" or "password"
     private var passwordMatcher: PasswordMatcher?
 
+    // Triple-escape setting
     private static let unlockModeKey = "unlockMode"
+    private static let tripleEscapeKey = "tripleEscapeEnabled"
+    private var tripleEscapeEnabled = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         loadUnlockMode()
+        loadTripleEscapeSetting()
         setupMenuBar()
         bindHotkeyActions()
         bindOverlayCallbacks()
@@ -52,6 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(mode, forKey: Self.unlockModeKey)
     }
 
+    private func loadTripleEscapeSetting() {
+        if UserDefaults.standard.object(forKey: Self.tripleEscapeKey) != nil {
+            tripleEscapeEnabled = UserDefaults.standard.bool(forKey: Self.tripleEscapeKey)
+        }
+    }
+
     // MARK: - Menu Bar
 
     private func setupMenuBar() {
@@ -67,6 +78,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem(title: "Change Unlock Method...", action: #selector(changeUnlockMethod), keyEquivalent: ""))
         menu.items.last?.target = self
+
+        tripleEscapeMenuItem = NSMenuItem(title: "Triple-Escape Dismiss", action: #selector(toggleTripleEscape), keyEquivalent: "")
+        tripleEscapeMenuItem.target = self
+        tripleEscapeMenuItem.state = tripleEscapeEnabled ? .on : .off
+        menu.addItem(tripleEscapeMenuItem)
 
         menu.addItem(.separator())
 
@@ -139,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         hotkeyManager.onEscapeTriplePress = { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.tripleEscapeEnabled else { return }
             if self.overlayManager.isActive {
                 self.overlayManager.hide()
                 self.updateActivateMenuTitle()
@@ -159,6 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handlePasswordKey(chars)
         }
 
+        overlayManager.onOverlayBackspacePressed = { [weak self] in
+            self?.handleBackspace()
+        }
+
         overlayManager.onStateChanged = { [weak self] in
             self?.updateMenuBarIcon()
         }
@@ -173,14 +193,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let result = matcher.processKey(char)
             switch result {
             case .correct(let position):
-                if position >= 2 {
-                    let green = NSColor(red: 0, green: 0.15, blue: 0.1, alpha: 0.08)
-                    overlayManager.flashAllWindows(color: green)
+                if position >= 1 {
+                    overlayManager.showProgressOnPrimary(count: position + 1)
                 }
-            case .incorrect:
-                let red = NSColor(red: 0.15, green: 0, blue: 0, alpha: 0.08)
-                overlayManager.flashAllWindows(color: red)
+            case .incorrect(let previousProgress):
+                if previousProgress >= 2 {
+                    overlayManager.showErrorOnPrimary(count: previousProgress)
+                } else {
+                    overlayManager.clearFeedbackOnPrimary()
+                }
             case .complete:
+                overlayManager.clearFeedbackOnPrimary()
                 if let setup = setupWindowController, setup.phase == .practice {
                     overlayManager.hide()
                     setup.practiceSucceeded()
@@ -190,6 +213,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
+        }
+    }
+
+    private func handleBackspace() {
+        guard overlayManager.isActive, unlockMode == "password", let matcher = passwordMatcher else { return }
+        let newIndex = matcher.processBackspace()
+        if newIndex > 0 {
+            overlayManager.showProgressOnPrimary(count: newIndex)
+        } else {
+            overlayManager.clearFeedbackOnPrimary()
         }
     }
 
@@ -206,6 +239,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func changeUnlockMethod() {
         showSetupWindow(isFirstTime: false)
+    }
+
+    @objc private func toggleTripleEscape() {
+        tripleEscapeEnabled.toggle()
+        UserDefaults.standard.set(tripleEscapeEnabled, forKey: Self.tripleEscapeKey)
+        tripleEscapeMenuItem.state = tripleEscapeEnabled ? .on : .off
+        setupWindowController?.tripleEscapeEnabled = tripleEscapeEnabled
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -245,6 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setup.delegate = self
         setup.skipPractice = !isFirstTime
         setup.allowCancel = !isFirstTime
+        setup.tripleEscapeEnabled = tripleEscapeEnabled
         setup.showWindow(nil)
         setup.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

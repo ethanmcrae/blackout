@@ -1,49 +1,23 @@
 import Foundation
-import Security
 
-// MARK: - Keychain Helper
+// MARK: - Password Storage
 
 enum KeychainHelper {
-    private static let service = "com.local.Blackout"
-    private static let account = "unlockPassword"
+    private static let key = "unlockPassword"
 
     static func save(password: String) -> Bool {
-        delete()
-        guard let data = password.data(using: .utf8) else { return false }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-        ]
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        UserDefaults.standard.set(password, forKey: key)
+        return true
     }
 
     static func load() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
-              let password = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return password
+        UserDefaults.standard.string(forKey: key)
     }
 
     @discardableResult
     static func delete() -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        return SecItemDelete(query as CFDictionary) == errSecSuccess
+        UserDefaults.standard.removeObject(forKey: key)
+        return true
     }
 }
 
@@ -52,19 +26,21 @@ enum KeychainHelper {
 final class PasswordMatcher {
     enum Result {
         case correct(position: Int)
-        case incorrect
+        case incorrect(previousProgress: Int)
         case complete
     }
 
     private let characters: [Character]
     private var currentIndex: Int = 0
 
+    var progress: Int { currentIndex }
+
     init(password: String) {
         self.characters = Array(password)
     }
 
     func processKey(_ char: Character) -> Result {
-        guard !characters.isEmpty else { return .incorrect }
+        guard !characters.isEmpty else { return .incorrect(previousProgress: 0) }
 
         if char == characters[currentIndex] {
             currentIndex += 1
@@ -74,13 +50,19 @@ final class PasswordMatcher {
             }
             return .correct(position: currentIndex - 1)
         } else {
+            let prev = currentIndex
             currentIndex = 0
             // If the wrong char matches the first password char, advance to 1
             if char == characters[0] {
                 currentIndex = 1
             }
-            return .incorrect
+            return .incorrect(previousProgress: prev)
         }
+    }
+
+    func processBackspace() -> Int {
+        if currentIndex > 0 { currentIndex -= 1 }
+        return currentIndex
     }
 
     func reset() {

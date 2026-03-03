@@ -41,6 +41,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Whether triple-escape dismiss is currently enabled
+    var tripleEscapeEnabled = true {
+        didSet { updateEscapeHint() }
+    }
+
     /// The selected unlock mode: "hotkey" or "password"
     private(set) var selectedMode: String = "hotkey"
 
@@ -76,7 +81,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         guard let contentView = window?.contentView else { return }
 
         instructionLabel = NSTextField(wrappingLabelWithString: "")
-        instructionLabel.alignment = .center
+        instructionLabel.alignment = .left
         instructionLabel.font = .systemFont(ofSize: 14)
         instructionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -91,7 +96,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         passwordField.isHidden = true
 
         errorLabel = NSTextField(labelWithString: "")
-        errorLabel.alignment = .center
+        errorLabel.alignment = .left
         errorLabel.font = .systemFont(ofSize: 13)
         errorLabel.textColor = .systemRed
         errorLabel.isHidden = true
@@ -104,16 +109,21 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         secondaryButton.bezelStyle = .rounded
         secondaryButton.isHidden = true
 
-        let buttonRow = NSStackView(views: [primaryButton, secondaryButton])
+        let buttonSpacer = NSView()
+        buttonSpacer.translatesAutoresizingMaskIntoConstraints = false
+        buttonSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let buttonRow = NSStackView(views: [buttonSpacer, secondaryButton, primaryButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
 
-        escapeHintLabel = NSTextField(wrappingLabelWithString: "Tip: Triple-press Escape is always available as an emergency dismiss.")
-        escapeHintLabel.alignment = .center
+        escapeHintLabel = NSTextField(wrappingLabelWithString: "")
+        escapeHintLabel.alignment = .left
         escapeHintLabel.font = .systemFont(ofSize: 11)
         escapeHintLabel.textColor = .secondaryLabelColor
         escapeHintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         escapeHintLabel.translatesAutoresizingMaskIntoConstraints = false
+        updateEscapeHint()
 
         let contentStack = NSStackView(views: [
             instructionLabel,
@@ -123,7 +133,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             buttonRow,
         ])
         contentStack.orientation = .vertical
-        contentStack.alignment = .centerX
+        contentStack.alignment = .leading
         contentStack.spacing = 16
         contentStack.setCustomSpacing(4, after: passwordField)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
@@ -137,12 +147,23 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
             instructionLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            hotkeyLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            buttonRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             passwordField.widthAnchor.constraint(equalToConstant: 220),
 
             escapeHintLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             escapeHintLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             escapeHintLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
         ])
+    }
+
+    private func updateEscapeHint() {
+        guard let escapeHintLabel = escapeHintLabel else { return }
+        if tripleEscapeEnabled {
+            escapeHintLabel.stringValue = "Tip: Triple-press Escape is always available as an emergency dismiss."
+        } else {
+            escapeHintLabel.stringValue = "Tip: Triple-press Escape can be enabled as an emergency dismiss from the menu bar."
+        }
     }
 
     // MARK: - Error Display
@@ -334,6 +355,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         secondaryButton.target = self
         secondaryButton.isHidden = false
 
+        passwordField.target = self
+        passwordField.action = #selector(passwordEntryNext)
+
         window?.makeFirstResponder(passwordField)
     }
 
@@ -374,6 +398,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         secondaryButton.action = #selector(passwordConfirmBack)
         secondaryButton.target = self
         secondaryButton.isHidden = false
+
+        passwordField.target = self
+        passwordField.action = #selector(passwordConfirmDone)
 
         window?.makeFirstResponder(passwordField)
     }
@@ -435,10 +462,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     func practiceSucceeded() {
         phase = .complete
 
+        let tripleEscapeNote = "\n\nTriple-press Escape is on by default as an emergency dismiss. You can toggle it from the menu bar."
         if selectedMode == "password" {
-            instructionLabel.stringValue = "You're all set! Blackout is ready to use.\n\nType your password to dismiss the black overlay anytime."
+            instructionLabel.stringValue = "You're all set! Blackout is ready to use.\n\nType your password to dismiss the black overlay anytime." + tripleEscapeNote
         } else {
-            instructionLabel.stringValue = "You're all set! Blackout is ready to use.\n\nUse your hotkey to toggle the black overlay anytime."
+            instructionLabel.stringValue = "You're all set! Blackout is ready to use.\n\nUse your hotkey to toggle the black overlay anytime." + tripleEscapeNote
         }
         hotkeyLabel.stringValue = "Setup Complete"
         hotkeyLabel.isHidden = false
