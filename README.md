@@ -50,7 +50,6 @@ cd blackout
 mkdir -p Blackout.app/Contents/{MacOS,Resources}
 cp Blackout/Info.plist Blackout.app/Contents/Info.plist
 cp Blackout/AppIcon.icns Blackout.app/Contents/Resources/
-cp Blackout/statusbar-icon*.png Blackout.app/Contents/Resources/
 swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
