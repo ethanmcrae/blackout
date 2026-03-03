@@ -7,6 +7,7 @@ final class OverlayWindow: NSWindow {
     var onEscapePressed: (() -> Void)?
     var onKeyPressed: ((String) -> Void)?
     var onBackspacePressed: (() -> Void)?
+    var onArrowKeyPressed: ((UInt16) -> Void)?
 
     /// Set to true during hide/fade-out to prevent resignKey from re-asserting focus.
     var suppressFocusReassert = false
@@ -27,6 +28,10 @@ final class OverlayWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 126 || event.keyCode == 125 {
+            onArrowKeyPressed?(event.keyCode)
+            return
+        }
         if event.keyCode == UInt16(kVK_Escape) {
             onEscapePressed?()
         } else if event.keyCode == UInt16(kVK_Delete) {
@@ -128,8 +133,14 @@ final class OverlayManager {
     /// Called when backspace is pressed on an overlay window.
     var onOverlayBackspacePressed: (() -> Void)?
 
+    /// Called when an arrow key is pressed on an overlay window.
+    var onOverlayArrowKeyPressed: ((UInt16) -> Void)?
+
     /// Called when overlay state changes (for menu bar icon updates, etc.)
     var onStateChanged: (() -> Void)?
+
+    private var currentOpacity: CGFloat = 1.0
+    private var opacityAdjustmentTimer: Timer?
 
     init() {
         NotificationCenter.default.addObserver(
@@ -178,6 +189,17 @@ final class OverlayManager {
             }
         }
 
+        // Reset opacity state for this activation
+        currentOpacity = 1.0
+        for window in overlayWindows {
+            window.isOpaque = true
+            window.backgroundColor = .black
+        }
+        opacityAdjustmentTimer?.invalidate()
+        opacityAdjustmentTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
+            self?.opacityAdjustmentTimer = nil
+        }
+
         startFocusGuard()
         startLocalKeyMonitor()
     }
@@ -188,6 +210,9 @@ final class OverlayManager {
         NSCursor.unhide()
         sleepPrevention.disable()
         onStateChanged?()
+        opacityAdjustmentTimer?.invalidate()
+        opacityAdjustmentTimer = nil
+        currentOpacity = 1.0
         stopFocusGuard()
         stopLocalKeyMonitor()
 
@@ -235,6 +260,10 @@ final class OverlayManager {
     private func startLocalKeyMonitor() {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, self.isActive else { return event }
+            if event.keyCode == 126 || event.keyCode == 125 {
+                self.onOverlayArrowKeyPressed?(event.keyCode)
+                return nil
+            }
             if event.keyCode == UInt16(kVK_Escape) {
                 self.onOverlayEscapePressed?()
                 return nil
@@ -290,6 +319,17 @@ final class OverlayManager {
         overlayWindows.first?.clearFeedback()
     }
 
+    // MARK: - Opacity Adjustment
+
+    func adjustOpacity(delta: CGFloat) {
+        guard isActive, opacityAdjustmentTimer != nil else { return }
+        currentOpacity = min(max(currentOpacity + delta, 0.05), 1.0)
+        for window in overlayWindows {
+            window.isOpaque = currentOpacity >= 1.0
+            window.backgroundColor = NSColor.black.withAlphaComponent(currentOpacity)
+        }
+    }
+
     // MARK: - Window Creation
 
     private func createWindows() {
@@ -330,6 +370,9 @@ final class OverlayManager {
         }
         window.onBackspacePressed = { [weak self] in
             self?.onOverlayBackspacePressed?()
+        }
+        window.onArrowKeyPressed = { [weak self] keyCode in
+            self?.onOverlayArrowKeyPressed?(keyCode)
         }
         return window
     }
@@ -376,6 +419,9 @@ final class OverlayManager {
         window.onBackspacePressed = { [weak self] in
             self?.onOverlayBackspacePressed?()
         }
+        window.onArrowKeyPressed = { [weak self] keyCode in
+            self?.onOverlayArrowKeyPressed?(keyCode)
+        }
         return window
     }
 
@@ -390,12 +436,15 @@ final class OverlayManager {
         NSApp.activate(ignoringOtherApps: true)
         for window in overlayWindows {
             window.alphaValue = 1.0
+            window.isOpaque = currentOpacity >= 1.0
+            window.backgroundColor = NSColor.black.withAlphaComponent(currentOpacity)
             window.orderFrontRegardless()
         }
         overlayWindows.first?.makeKeyAndOrderFront(nil)
     }
 
     deinit {
+        opacityAdjustmentTimer?.invalidate()
         stopFocusGuard()
         stopLocalKeyMonitor()
         // Force-remove without animation on teardown

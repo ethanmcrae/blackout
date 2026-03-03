@@ -179,6 +179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleBackspace()
         }
 
+        overlayManager.onOverlayArrowKeyPressed = { [weak self] keyCode in
+            guard let self = self, self.overlayManager.isActive else { return }
+            let delta: CGFloat = keyCode == 126 ? 0.05 : -0.05
+            self.overlayManager.adjustOpacity(delta: delta)
+        }
+
         overlayManager.onStateChanged = { [weak self] in
             self?.updateMenuBarIcon()
         }
