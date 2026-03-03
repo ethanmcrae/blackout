@@ -27,6 +27,8 @@ Clone and build Blackout — a macOS menu bar app that blacks out all screens.
 1. Clone: git clone https://github.com/ethanmcrae/blackout.git ~/blackout
 2. Build:
    cd ~/blackout
+   mkdir -p Blackout.app/Contents/MacOS
+   cp Blackout/Info.plist Blackout.app/Contents/Info.plist
    swiftc -o Blackout.app/Contents/MacOS/Blackout \
      Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
      Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
@@ -45,6 +47,8 @@ Requires macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
 ```bash
 git clone https://github.com/ethanmcrae/blackout.git
 cd blackout
+mkdir -p Blackout.app/Contents/MacOS
+cp Blackout/Info.plist Blackout.app/Contents/Info.plist
 swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
