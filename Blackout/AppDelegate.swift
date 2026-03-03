@@ -101,13 +101,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenuBarIcon() {
         guard let button = statusItem.button else { return }
-        if overlayManager.isActive {
-            button.image = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: "Blackout Active")
-            if button.image == nil { button.title = "◉" }
+        let name = overlayManager.isActive ? "statusbar-icon-active" : "statusbar-icon"
+        if let img = loadStatusBarImage(named: name) {
+            img.isTemplate = true
+            button.image = img
         } else {
-            button.image = NSImage(systemSymbolName: "moon.fill", accessibilityDescription: "Blackout")
-            if button.image == nil { button.title = "●" }
+            // Fallback to SF Symbols
+            if overlayManager.isActive {
+                button.image = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: "Blackout Active")
+            } else {
+                button.image = NSImage(systemSymbolName: "moon.fill", accessibilityDescription: "Blackout")
+            }
         }
+    }
+
+    private func loadStatusBarImage(named name: String) -> NSImage? {
+        guard let resourcePath = Bundle.main.resourcePath else { return nil }
+        let url2x = URL(fileURLWithPath: resourcePath).appendingPathComponent("\(name)@2x.png")
+        let url1x = URL(fileURLWithPath: resourcePath).appendingPathComponent("\(name).png")
+        if let img = NSImage(contentsOf: url2x) {
+            img.size = NSSize(width: img.size.width / 2, height: img.size.height / 2)
+            return img
+        }
+        return NSImage(contentsOf: url1x)
     }
 
     private func updateActivateMenuTitle() {
