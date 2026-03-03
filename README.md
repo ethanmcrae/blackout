@@ -22,40 +22,34 @@ A macOS menu bar app that covers all screens with a black overlay. Useful for tu
 Copy the following prompt into your AI coding agent (Claude Code, Cursor, etc.):
 
 ```
-Clone and build Blackout — a macOS menu bar app that blacks out all screens.
+Install Blackout — a macOS menu bar app that blacks out all screens.
 
 1. Clone: git clone https://github.com/ethanmcrae/blackout.git ~/blackout
-2. Build:
-   cd ~/blackout
-   mkdir -p Blackout.app/Contents/MacOS
-   cp Blackout/Info.plist Blackout.app/Contents/Info.plist
-   swiftc -o Blackout.app/Contents/MacOS/Blackout \
-     Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
-     Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
-     Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
-     -framework Cocoa -framework Carbon -framework ServiceManagement
-3. Copy to Applications: cp -r Blackout.app /Applications/Blackout.app
-4. Launch it: open /Applications/Blackout.app
+2. Install: cp -r ~/blackout/Blackout.app /Applications/Blackout.app
+3. Launch: open /Applications/Blackout.app
 
 On first launch it will appear in the menu bar and walk you through setup.
 ```
 
-## Manual Build
-
-Requires macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
+## Manual Install
 
 ```bash
 git clone https://github.com/ethanmcrae/blackout.git
+cp -r blackout/Blackout.app /Applications/
+open /Applications/Blackout.app
+```
+
+## Build from Source
+
+If you want to modify the app, you can rebuild it. Requires macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
+
+```bash
 cd blackout
-mkdir -p Blackout.app/Contents/MacOS
-cp Blackout/Info.plist Blackout.app/Contents/Info.plist
 swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
   Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
   -framework Cocoa -framework Carbon -framework ServiceManagement
-cp -r Blackout.app /Applications/
-open /Applications/Blackout.app
 ```
 
 ## Usage

@@ -1,6 +1,5 @@
 # Build artifacts
 .build/
-Blackout.app/
 DerivedData/
 *.xcworkspace
 
