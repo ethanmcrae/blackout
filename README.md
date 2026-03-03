@@ -24,9 +24,10 @@ Copy the following prompt into your AI coding agent (Claude Code, Cursor, etc.):
 ```
 Install Blackout — a macOS menu bar app that blacks out all screens.
 
-1. Clone: git clone https://github.com/ethanmcrae/blackout.git ~/blackout
-2. Install: cp -r ~/blackout/Blackout.app /Applications/Blackout.app
-3. Launch: open /Applications/Blackout.app
+1. Clone: git clone https://github.com/ethanmcrae/blackout.git ~/Downloads/blackout
+2. Install: cp -r ~/Downloads/blackout/Blackout.app /Applications/Blackout.app
+3. Clean up: rm -rf ~/Downloads/blackout
+4. Launch: open /Applications/Blackout.app
 
 On first launch it will appear in the menu bar and walk you through setup.
 ```
@@ -34,8 +35,9 @@ On first launch it will appear in the menu bar and walk you through setup.
 ## Manual Install
 
 ```bash
-git clone https://github.com/ethanmcrae/blackout.git
-cp -r blackout/Blackout.app /Applications/
+git clone https://github.com/ethanmcrae/blackout.git ~/Downloads/blackout
+cp -r ~/Downloads/blackout/Blackout.app /Applications/
+rm -rf ~/Downloads/blackout
 open /Applications/Blackout.app
 ```
 
