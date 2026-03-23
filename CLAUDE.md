@@ -17,6 +17,7 @@ swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
   Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
+  Shared/AnimationModule.swift Shared/IsometricModule.swift \
   -framework Cocoa -framework Carbon -framework ServiceManagement
 ```
 
@@ -45,6 +46,7 @@ All source lives in `Blackout/` (flat, no nested modules). `Blackout.app/` is co
 | `HotkeyManager.swift` | Global hotkey via Carbon API, triple-Escape detection, key display strings |
 | `SetupWindowController.swift` | Guided wizard (mode select → capture → confirm → practice → done) |
 | `PasswordMatcher.swift` | Character-by-character password validation + KeychainHelper (UserDefaults storage) |
+| `GenerativeBackgroundView.swift` | NSView subclass: isometric grid pattern generation, wavefront animation, Core Graphics drawing |
 | `SleepPrevention.swift` | IOKit assertion to prevent display sleep while overlay is active |
 
 ## Key Design Decisions

@@ -109,10 +109,55 @@ final class OverlayWindow: NSWindow {
     }
 }
 
+private func debugLog(_ msg: String) {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("blackout-debug.log")
+    let line = "\(Date()): [Overlay] \(msg)\n"
+    if let handle = try? FileHandle(forWritingTo: url) {
+        handle.seekToEndOfFile()
+        handle.write(line.data(using: .utf8)!)
+        handle.closeFile()
+    }
+}
+
 final class OverlayManager {
     private var overlayWindows: [OverlayWindow] = []
     private let sleepPrevention = SleepPrevention()
     private(set) var isActive = false
+
+    private static let accentColorKey = "accentColor"
+    private static let lightModeKey = "lightMode"
+    private static let showFPSKey = "showFPS"
+    /// Resolved once per show() so all screens get the same color
+    private var currentConfig: AnimationConfig = AnimationConfig(
+        accentR: 0.078, accentG: 0.404, accentB: 1.0,
+        lightMode: false, movementType: .walkers
+    )
+
+    private func resolveSettings() {
+        let raw = UserDefaults.standard.string(forKey: Self.accentColorKey) ?? "random"
+        let color = AccentColor(rawValue: raw) ?? .blue
+        var rgb = color.rgb
+        let lightMode = UserDefaults.standard.bool(forKey: Self.lightModeKey)
+        if lightMode && rgb.0 > 0.9 && rgb.1 > 0.9 && rgb.2 > 0.9 {
+            rgb = (0.0, 0.0, 0.0)
+        }
+        let moveRaw = UserDefaults.standard.string(forKey: "movementType") ?? "walkers"
+        let moveType = (MovementType(rawValue: moveRaw) ?? .walkers).resolved
+
+        let showFPS = UserDefaults.standard.bool(forKey: Self.showFPSKey)
+        currentConfig = AnimationConfig(
+            accentR: rgb.0, accentG: rgb.1, accentB: rgb.2,
+            lightMode: lightMode, movementType: moveType, showFPS: showFPS
+        )
+    }
+
+    func setShowFPS(_ show: Bool) {
+        for window in overlayWindows {
+            if let bgView = window.contentView as? IsometricModule {
+                bgView.showFPS = show
+            }
+        }
+    }
 
     /// When true, shows a small preview window instead of fullscreen overlays.
     /// Set to false for production use.
@@ -166,18 +211,41 @@ final class OverlayManager {
     func show() {
         guard !isActive else { return }
         isActive = true
+        debugLog("show() called, creating windows for \(NSScreen.screens.count) screens")
         NSCursor.hide()
+        resolveSettings()
         createWindows()
+        debugLog("created \(overlayWindows.count) windows")
+        for (i, w) in overlayWindows.enumerated() {
+            debugLog("window \(i): frame=\(w.frame), contentView=\(String(describing: type(of: w.contentView))), contentViewFrame=\(w.contentView?.frame ?? .zero)")
+        }
         sleepPrevention.enable()
         onStateChanged?()
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // Lock down: disable Cmd+Tab, Force Quit, hide dock/menu bar
+        NSApp.presentationOptions = [
+            .disableProcessSwitching,    // prevents Cmd+Tab
+            .disableForceQuit,           // prevents Cmd+Opt+Esc
+            .disableSessionTermination,  // prevents logout
+            .disableHideApplication,     // prevents Cmd+H
+            .hideDock,                   // hides the dock
+            .hideMenuBar,               // hides the menu bar
+        ]
 
         // Fade in: start transparent, animate to opaque
         for window in overlayWindows {
             window.alphaValue = 0.0
             window.orderFrontRegardless()
         }
+        // Start generative background animations
+        for window in overlayWindows {
+            if let bgView = window.contentView as? IsometricModule {
+                bgView.startAnimation()
+            }
+        }
+
         // Make the first overlay window key so it receives Escape presses
         overlayWindows.first?.makeKeyAndOrderFront(nil)
 
@@ -191,9 +259,10 @@ final class OverlayManager {
 
         // Reset opacity state for this activation
         currentOpacity = 1.0
+        let bgColor: NSColor = currentConfig.lightMode ? .white : .black
         for window in overlayWindows {
             window.isOpaque = true
-            window.backgroundColor = .black
+            window.backgroundColor = bgColor
         }
         opacityAdjustmentTimer?.invalidate()
         opacityAdjustmentTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
@@ -208,6 +277,7 @@ final class OverlayManager {
         guard isActive else { return }
         isActive = false
         NSCursor.unhide()
+        NSApp.presentationOptions = []  // restore normal behavior
         sleepPrevention.disable()
         onStateChanged?()
         opacityAdjustmentTimer?.invalidate()
@@ -218,6 +288,13 @@ final class OverlayManager {
 
         let windows = overlayWindows
         overlayWindows = []
+
+        // Stop generative background animations
+        for window in windows {
+            if let bgView = window.contentView as? IsometricModule {
+                bgView.stopAnimation()
+            }
+        }
 
         // Suppress focus re-assertion during fade-out
         for window in windows {
@@ -362,6 +439,13 @@ final class OverlayManager {
         window.isOpaque = true
         window.hasShadow = false
         window.ignoresMouseEvents = false
+
+        // Add generative background (use local coords, not global screen.frame)
+        let bgView = IsometricModule(frame: NSRect(origin: .zero, size: screen.frame.size),
+                                                   config: currentConfig)
+        bgView.autoresizingMask = [.width, .height]
+        window.contentView = bgView
+
         window.onEscapePressed = { [weak self] in
             self?.onOverlayEscapePressed?()
         }
@@ -396,19 +480,22 @@ final class OverlayManager {
         window.center()
         window.hasShadow = true
 
+        // Add generative background to preview too
+        let bgView = IsometricModule(frame: frame, config: currentConfig)
+        bgView.autoresizingMask = [.width, .height]
+        window.contentView = bgView
+
         // Add a label so it's obvious this is a preview
         let label = NSTextField(labelWithString: "BLACKOUT ACTIVE\n(Preview Mode)")
         label.alignment = .center
         label.font = .boldSystemFont(ofSize: 16)
         label.textColor = .darkGray
         label.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView?.addSubview(label)
-        if let contentView = window.contentView {
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            ])
-        }
+        bgView.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: bgView.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: bgView.centerYAnchor),
+        ])
 
         window.onEscapePressed = { [weak self] in
             self?.onOverlayEscapePressed?()
@@ -427,8 +514,11 @@ final class OverlayManager {
 
     @objc private func screensChanged() {
         guard isActive else { return }
-        // Remove old windows immediately (no fade — this is a display reconfiguration)
+        // Stop animations on old windows
         for window in overlayWindows {
+            if let bgView = window.contentView as? IsometricModule {
+                bgView.stopAnimation()
+            }
             window.orderOut(nil)
         }
         overlayWindows.removeAll()
@@ -439,6 +529,9 @@ final class OverlayManager {
             window.isOpaque = currentOpacity >= 1.0
             window.backgroundColor = NSColor.black.withAlphaComponent(currentOpacity)
             window.orderFrontRegardless()
+            if let bgView = window.contentView as? IsometricModule {
+                bgView.startAnimation()
+            }
         }
         overlayWindows.first?.makeKeyAndOrderFront(nil)
     }
@@ -447,8 +540,11 @@ final class OverlayManager {
         opacityAdjustmentTimer?.invalidate()
         stopFocusGuard()
         stopLocalKeyMonitor()
-        // Force-remove without animation on teardown
+        // Stop animations and force-remove without animation on teardown
         for window in overlayWindows {
+            if let bgView = window.contentView as? IsometricModule {
+                bgView.stopAnimation()
+            }
             window.orderOut(nil)
         }
         overlayWindows.removeAll()
