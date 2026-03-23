@@ -21,6 +21,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let tripleEscapeKey = "tripleEscapeEnabled"
     private var tripleEscapeEnabled = true
 
+    // Color setting
+    private static let accentColorKey = "accentColor"
+    private static let lightModeKey = "lightMode"
+    private static let movementTypeKey = "movementType"
+    private static let showFPSKey = "showFPS"
+    private var colorMenuItems: [NSMenuItem] = []
+    private var movementMenuItems: [NSMenuItem] = []
+    private var lightModeMenuItem: NSMenuItem!
+    private var showFPSMenuItem: NSMenuItem!
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         loadUnlockMode()
         loadTripleEscapeSetting()
@@ -83,6 +93,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tripleEscapeMenuItem.target = self
         tripleEscapeMenuItem.state = tripleEscapeEnabled ? .on : .off
         menu.addItem(tripleEscapeMenuItem)
+
+        // Appearance submenu (contains Color, Animation, Light Mode)
+        let appearanceMenu = NSMenu(title: "Appearance")
+
+        // Color sub-submenu
+        let colorMenu = NSMenu(title: "Color")
+        for color in AccentColor.allCases {
+            let item = NSMenuItem(title: color.displayName, action: #selector(selectColor(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = color.rawValue
+            colorMenu.addItem(item)
+            colorMenuItems.append(item)
+        }
+        let colorSubmenuItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
+        colorSubmenuItem.submenu = colorMenu
+        appearanceMenu.addItem(colorSubmenuItem)
+        updateColorMenuCheckmarks()
+
+        // Animation sub-submenu
+        let movementMenu = NSMenu(title: "Animation")
+        for moveType in MovementType.allCases {
+            let item = NSMenuItem(title: moveType.displayName, action: #selector(selectMovement(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = moveType.rawValue
+            movementMenu.addItem(item)
+            movementMenuItems.append(item)
+        }
+        let movementSubmenuItem = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
+        movementSubmenuItem.submenu = movementMenu
+        appearanceMenu.addItem(movementSubmenuItem)
+        updateMovementMenuCheckmarks()
+
+        appearanceMenu.addItem(.separator())
+
+        // Light Mode toggle
+        lightModeMenuItem = NSMenuItem(title: "Light Mode", action: #selector(toggleLightMode), keyEquivalent: "")
+        lightModeMenuItem.target = self
+        lightModeMenuItem.state = UserDefaults.standard.bool(forKey: Self.lightModeKey) ? .on : .off
+        appearanceMenu.addItem(lightModeMenuItem)
+
+        // Show FPS toggle
+        showFPSMenuItem = NSMenuItem(title: "Show FPS", action: #selector(toggleShowFPS), keyEquivalent: "")
+        showFPSMenuItem.target = self
+        showFPSMenuItem.state = UserDefaults.standard.bool(forKey: Self.showFPSKey) ? .on : .off
+        appearanceMenu.addItem(showFPSMenuItem)
+
+        let appearanceSubmenuItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        appearanceSubmenuItem.submenu = appearanceMenu
+        menu.addItem(appearanceSubmenuItem)
 
         menu.addItem(.separator())
 
@@ -245,6 +304,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func changeUnlockMethod() {
         showSetupWindow(isFirstTime: false)
+    }
+
+    @objc private func selectColor(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(rawValue, forKey: Self.accentColorKey)
+        updateColorMenuCheckmarks()
+    }
+
+    @objc private func toggleLightMode() {
+        let current = UserDefaults.standard.bool(forKey: Self.lightModeKey)
+        UserDefaults.standard.set(!current, forKey: Self.lightModeKey)
+        lightModeMenuItem.state = !current ? .on : .off
+        updateColorMenuTitles()
+    }
+
+    @objc private func toggleShowFPS() {
+        let current = UserDefaults.standard.bool(forKey: Self.showFPSKey)
+        UserDefaults.standard.set(!current, forKey: Self.showFPSKey)
+        showFPSMenuItem.state = !current ? .on : .off
+        overlayManager.setShowFPS(!current)
+    }
+
+
+    @objc private func selectMovement(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(rawValue, forKey: Self.movementTypeKey)
+        updateMovementMenuCheckmarks()
+    }
+
+    private func updateMovementMenuCheckmarks() {
+        let current = UserDefaults.standard.string(forKey: Self.movementTypeKey) ?? "walkers"
+        for item in movementMenuItems {
+            item.state = (item.representedObject as? String) == current ? .on : .off
+        }
+    }
+
+    private func updateColorMenuCheckmarks() {
+        let current = UserDefaults.standard.string(forKey: Self.accentColorKey) ?? "random"
+        for item in colorMenuItems {
+            item.state = (item.representedObject as? String) == current ? .on : .off
+        }
+        updateColorMenuTitles()
+    }
+
+    private func updateColorMenuTitles() {
+        let lightMode = UserDefaults.standard.bool(forKey: Self.lightModeKey)
+        for item in colorMenuItems {
+            if (item.representedObject as? String) == "white" {
+                item.title = lightMode ? "Black" : "White"
+            }
+        }
     }
 
     @objc private func toggleTripleEscape() {
