@@ -41,6 +41,28 @@ rm -rf ~/Downloads/blackout
 open /Applications/Blackout.app
 ```
 
+## Screen Saver
+
+Blackout also includes an animated isometric grid screen saver.
+
+### Install Screen Saver
+
+```bash
+git clone https://github.com/ethanmcrae/blackout.git ~/Downloads/blackout
+cd ~/Downloads/blackout/BlackoutSaver
+bash build.sh
+cp -r BlackoutSaver.saver ~/Library/Screen\ Savers/
+```
+
+Then open **System Settings → Screen Saver** and select **BlackoutSaver**.
+
+### Build Screen Saver from Source
+
+```bash
+cd blackout/BlackoutSaver
+bash build.sh
+```
+
 ## Build from Source
 
 If you want to modify the app, you can rebuild it. Requires macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
@@ -54,6 +76,7 @@ swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
   Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
+  Shared/AnimationModule.swift Shared/IsometricModule.swift \
   -framework Cocoa -framework Carbon -framework ServiceManagement
 ```
 
