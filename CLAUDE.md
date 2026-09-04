@@ -63,6 +63,26 @@ bash Harness/build.sh
 ./Harness/.build/isoharness bench --frames 150
 ```
 
+`bench` draws into one long-lived bitmap context, matching what the view does
+when it draws into the window's backing store. Allocating a fresh context per
+frame charges the background fill for faulting in ~30MB of cold pages and
+roughly triples the Core Graphics figure -- an early version of this tool did
+that and overstated the speedup by about 4x. Measure a renderer against a warm
+destination, or the number is about the allocator, not the renderer.
+
+Steady-state cost while the overlay is up, as a share of one CPU core:
+
+| Mode | Before | After | GPU added |
+| --- | --- | --- | --- |
+| Walkers | 3.5-6.5% | 1.1-1.3% | 1.1-2.5% |
+| Ripple | 3.9-6.0% | 1.1-1.5% | 0.7-1.7% |
+| Wave | 3.3-6.2% | 1.9-5.2% | 0.7-1.7% |
+
+Wave gains least. Its Core Graphics path already batched strokes into five
+paths, and `IsometricSimulation.fill` costs 0.4-0.8 ms per frame there because
+it does two dictionary lookups per lit edge. Moving the simulation to
+index-based storage is the obvious next win if that mode matters.
+
 Useful flags: `--size WxH`, `--scale`, `--color`, `--light`, `--crop x,y,w,h`,
 `--zoom N` (nearest-neighbour magnification, for looking at individual pixels),
 `--out DIR`.

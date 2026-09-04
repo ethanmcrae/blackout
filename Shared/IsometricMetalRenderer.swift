@@ -264,7 +264,11 @@ final class IsometricMetalRenderer {
     /// the GPU or reading anything back. This is the CPU-side cost the live
     /// path actually pays each frame; `renderOffscreen` adds a full stall and a
     /// framebuffer copy on top and is only for verification.
-    func encodeOnlyForBenchmark(frame: IsometricFrame, params: IsometricRenderParams) {
+    /// `onGPUTime` reports how long the GPU was actually busy on this frame,
+    /// in seconds, once it completes. Used to measure the energy the GPU path
+    /// adds, which CPU timing alone cannot see.
+    func encodeOnlyForBenchmark(frame: IsometricFrame, params: IsometricRenderParams,
+                                onGPUTime: ((Double) -> Void)? = nil) {
         let w = Int((params.size.width * params.scale).rounded())
         let h = Int((params.size.height * params.scale).rounded())
         guard w > 0, h > 0 else { return }
@@ -280,7 +284,10 @@ final class IsometricMetalRenderer {
         inFlight.wait()
         bufferIndex = (bufferIndex + 1) % Self.bufferCount
         encode(frame: frame, params: params, texture: texture, commandBuffer: commandBuffer)
-        commandBuffer.addCompletedHandler { [inFlight] _ in inFlight.signal() }
+        commandBuffer.addCompletedHandler { [inFlight] cb in
+            onGPUTime?(cb.gpuEndTime - cb.gpuStartTime)
+            inFlight.signal()
+        }
         commandBuffer.commit()
     }
 

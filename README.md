@@ -91,8 +91,12 @@ a Core Graphics renderer is kept as a reference so GPU output can be diffed
 against CPU output pixel for pixel. On a Mac without Metal the app falls back to
 the Core Graphics path automatically.
 
-Drawing cost dropped from roughly 2.7 ms per frame to 0.03 ms on a 16" display,
-and from 6.4 ms to 0.03 ms on a 34" ultrawide.
+While the overlay is up, the animation's CPU cost drops from roughly 4-6% of one
+core to 1.1-1.5% in Walkers and Ripple, in exchange for 0.7-2.5% of the GPU.
+Wave benefits least, around 1.1-1.8x, because its Core Graphics path was already
+batched and the saving is partly offset by the cost of building each frame's
+segment list. Measured as process CPU time over a fixed wall-clock window with
+the animation running at its real frame rate.
 
 ### Verifying a change to the animation
 

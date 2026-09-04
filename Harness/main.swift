@@ -235,6 +235,18 @@ final class DualRenderer {
         return ctx.makeImage()
     }
 
+    /// Draw into one long-lived context, which is what the view actually does:
+    /// it draws into the window's backing store, not a fresh buffer each frame.
+    /// Allocating a new context per frame charges the background fill for
+    /// faulting in ~30MB of cold pages and roughly triples the measurement.
+    private lazy var benchContext: CGContext? = makeContext(size: params.size, scale: params.scale)
+
+    func drawCGForBench() {
+        guard let ctx = benchContext else { return }
+        cg.setGeometry(sim.edgeEndpoints, generation: frame.generation)
+        cg.draw(frame: frame, params: params, in: ctx)
+    }
+
     func encodeMetal() {
         guard let metal else { return }
         metal.setGeometry(sim.edgeEndpoints, generation: frame.generation)
@@ -469,7 +481,7 @@ func runBench(_ args: Args) -> Int32 {
     print("edges: \(dual.sim.totalEdgeCount)")
 
     // Warm both paths.
-    for i in 0..<20 { dual.advance(to: i); _ = dual.renderCG(); _ = dual.renderMetal() }
+    for i in 0..<20 { dual.advance(to: i); dual.drawCGForBench(); dual.encodeMetal() }
 
     var simTime = 0.0, cgTime = 0.0, mtlTime = 0.0, encTime = 0.0
     var instTotal = 0
@@ -480,7 +492,7 @@ func runBench(_ args: Args) -> Int32 {
         instTotal += dual.frame.instances.count
 
         t = CACurrentMediaTime()
-        _ = dual.renderCG()
+        dual.drawCGForBench()
         cgTime += CACurrentMediaTime() - t
 
         t = CACurrentMediaTime()
