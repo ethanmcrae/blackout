@@ -10,6 +10,26 @@ struct AnimationConfig {
     let lightMode: Bool
     let movementType: MovementType
     var showFPS: Bool = false
+    /// Fixed seed for the simulation's randomness. Nil means pick one at
+    /// random, which is what the app ships with; the verification harness sets
+    /// it so a run can be reproduced exactly.
+    var seed: UInt64? = nil
+}
+
+// MARK: - Seeded Randomness
+
+/// SplitMix64. Small, fast, and identical across platforms and toolchains,
+/// which Swift's own generator is not -- so a recorded frame hash stays valid.
+struct SeededGenerator: RandomNumberGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
 }
 
 // MARK: - Animation Module Protocol

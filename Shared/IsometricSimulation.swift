@@ -42,6 +42,21 @@ struct IsometricFrame {
     var generation: Int = 0
 }
 
+// MARK: - Canonical ordering
+
+/// Swift seeds its hasher per process, so iterating a Set or Dictionary gives a
+/// different order on every run. That order leaks into the output here: it fixes
+/// edge indices, the order of adjacency lists (and therefore which edge
+/// randomElement picks), and the order segments are drawn in. Everything that
+/// feeds the animation is therefore sorted into this canonical order first.
+@inline(__always)
+func isometricEdgeOrder(_ x: GridEdge, _ y: GridEdge) -> Bool {
+    if x.a.q != y.a.q { return x.a.q < y.a.q }
+    if x.a.r != y.a.r { return x.a.r < y.a.r }
+    if x.b.q != y.b.q { return x.b.q < y.b.q }
+    return x.b.r < y.b.r
+}
+
 // MARK: - Simulation
 
 /// Pure simulation of the isometric grid animation. No AppKit, no drawing.
@@ -99,7 +114,9 @@ final class IsometricSimulation {
 
     private var activeEdges: Set<GridEdge> = []
     private var logoEdges: Set<GridEdge> = []
-    private var centerLogoEdges: Set<GridEdge> = []
+    /// Sorted, for order-stable random selection.
+    private var logoEdgeArray: [GridEdge] = []
+    private var centerLogoEdges: [GridEdge] = []
     /// Only edges with lit > 0 — avoids iterating all 17k+ edges every frame for fading
     private var litEdges: Set<GridEdge> = []
     /// Pre-cached screen positions for each edge endpoints
@@ -157,6 +174,11 @@ final class IsometricSimulation {
 
     private var needsGeneration = true
 
+    /// All randomness goes through here so a run can be reproduced exactly.
+    /// Unseeded, it is still random per launch -- the app's behaviour is
+    /// unchanged; only the harness pins it.
+    private var rng: SeededGenerator
+
     /// 6 neighbor directions on the isometric grid.
     /// Edges are at 30° (iso-right), 90° (vertical), 150° (iso-left) and reverses.
     private let directions: [(Int, Int)] = [
@@ -182,6 +204,7 @@ final class IsometricSimulation {
         self.lightMode = config.lightMode
         self.movementType = config.movementType
         self.size = size
+        self.rng = SeededGenerator(seed: config.seed ?? UInt64.random(in: 0...UInt64.max))
         log("init size: \(size), lightMode: \(lightMode), movement: \(movementType)")
     }
 
@@ -224,6 +247,7 @@ final class IsometricSimulation {
         log("generate() size: \(size)")
         activeEdges.removeAll()
         logoEdges.removeAll()
+        logoEdgeArray.removeAll()
         centerLogoEdges.removeAll()
         edgeToLogoIndex.removeAll()
         perLogoEdges.removeAll()
@@ -297,8 +321,11 @@ final class IsometricSimulation {
             edgeScreenPos[edge] = (position(for: edge.a), position(for: edge.b))
         }
 
-        // Cache edge array, stable indices, endpoints and midpoints
-        activeEdgeArray = Array(activeEdges)
+        // Cache edge array, stable indices, endpoints and midpoints.
+        // Sorted, not Set order: this array fixes every edge's index, which
+        // determines draw order and which edge a random pick returns.
+        activeEdgeArray = activeEdges.sorted(by: isometricEdgeOrder)
+        logoEdgeArray = logoEdges.sorted(by: isometricEdgeOrder)
         edgeIndex.reserveCapacity(activeEdgeArray.count)
         edgeEndpoints.reserveCapacity(activeEdgeArray.count)
         edgeMidpoints.reserveCapacity(activeEdgeArray.count)
@@ -385,7 +412,7 @@ final class IsometricSimulation {
             let before = logoEdges
             buildLogoAt(qOffset: qOffset, rOffset: rOffset)
             let newEdges = logoEdges.subtracting(before)
-            perLogoEdges.append(Array(newEdges))
+            perLogoEdges.append(newEdges.sorted(by: isometricEdgeOrder))
             for edge in newEdges {
                 edgeToLogoIndex[edge] = idx
             }
@@ -393,7 +420,7 @@ final class IsometricSimulation {
 
         // Center logo (always)
         addLogo(qOffset: 0, rOffset: 0)
-        centerLogoEdges = Set(perLogoEdges[0])
+        centerLogoEdges = perLogoEdges[0]
 
         // Scale logo count by screen area. ~5 for a 16" laptop (1728x1117 ≈ 1.93M px²)
         // ~10 for a 34" ultrawide (3440x1440 ≈ 4.95M px²)
@@ -410,8 +437,8 @@ final class IsometricSimulation {
         for _ in 0..<(extraLogos * 3) {  // extra attempts since some will be rejected
             if logoOffsets.count >= extraLogos + 1 { break }  // +1 for center
             let px = CGPoint(
-                x: size.width * CGFloat.random(in: margin...(1.0 - margin)),
-                y: size.height * CGFloat.random(in: margin...(1.0 - margin))
+                x: size.width * CGFloat.random(in: margin...(1.0 - margin), using: &rng),
+                y: size.height * CGFloat.random(in: margin...(1.0 - margin), using: &rng)
             )
             // Check distance to all already-placed logos
             let tooClose = placedPixels.contains { hypot($0.x - px.x, $0.y - px.y) < minDist }
@@ -566,22 +593,22 @@ final class IsometricSimulation {
                 unassigned.append((xi, zi))
             }
         }
-        unassigned.shuffle()
+        unassigned.shuffle(using: &rng)
 
         for (seedX, seedZ) in unassigned {
             if assigned[seedX][seedZ] { continue }
 
-            let targetSize = Int.random(in: 2...3)
+            let targetSize = Int.random(in: 2...3, using: &rng)
             var cluster: [(Int, Int)] = [(seedX, seedZ)]
             assigned[seedX][seedZ] = true
 
             var frontier = [(seedX, seedZ)]
             while cluster.count < targetSize && !frontier.isEmpty {
-                let fi = Int.random(in: 0..<frontier.count)
+                let fi = Int.random(in: 0..<frontier.count, using: &rng)
                 let (fx, fz) = frontier[fi]
 
                 var grew = false
-                for dir in growDirs.shuffled() {
+                for dir in growDirs.shuffled(using: &rng) {
                     if cluster.count >= targetSize { break }
                     let nx = fx + dir.0
                     let nz = fz + dir.1
@@ -608,7 +635,7 @@ final class IsometricSimulation {
                 }
             }
             let candidates = [1, 2, 3].filter { !neighborHeights.contains($0) }
-            let h = candidates.randomElement() ?? Int.random(in: 1...3)
+            let h = candidates.randomElement(using: &rng) ?? Int.random(in: 1...3, using: &rng)
             for (cx, cz) in cluster {
                 heights[cx][cz] = h
             }
@@ -619,10 +646,18 @@ final class IsometricSimulation {
 
     private func buildAdjacency() {
         adjacency.removeAll()
-        for edge in activeEdges {
+        // Iterate the canonical order so each node's candidate list is stable;
+        // pickNextEdge draws from these lists.
+        for edge in adjacencySource {
             adjacency[edge.a, default: []].append(edge)
             adjacency[edge.b, default: []].append(edge)
         }
+    }
+
+    /// buildAdjacency runs during generate(), before activeEdgeArray is built,
+    /// so it sorts its own view of the edges.
+    private var adjacencySource: [GridEdge] {
+        activeEdgeArray.isEmpty ? activeEdges.sorted(by: isometricEdgeOrder) : activeEdgeArray
     }
 
     // MARK: - Walker Animation
@@ -636,7 +671,7 @@ final class IsometricSimulation {
             currentEdge: edge,
             previousEdge: nil,
             progress: 0,
-            speed: walkerSpeed + Double.random(in: -1.5...1.5)
+            speed: walkerSpeed + Double.random(in: -1.5...1.5, using: &rng)
         ))
         walkerActiveEdges[edge] = (0, fromNode)
     }
@@ -647,7 +682,7 @@ final class IsometricSimulation {
         guard !activeEdges.isEmpty else { return }
 
         // Walker 1: start on the center logo specifically
-        if let logoStart = centerLogoEdges.randomElement() ?? logoEdges.randomElement() {
+        if let logoStart = centerLogoEdges.randomElement(using: &rng) ?? logoEdgeArray.randomElement(using: &rng) {
             spawnWalker(on: logoStart)
         }
 
@@ -664,12 +699,12 @@ final class IsometricSimulation {
         ]
 
         for (xMin, xMax, yMin, yMax) in regions {
-            let candidates = activeEdges.filter { edge in
+            let candidates = activeEdgeArray.filter { edge in
                 if logoEdges.contains(edge) { return false }
                 let p = position(for: edge.a)
                 return p.x >= xMin && p.x < xMax && p.y >= yMin && p.y < yMax
             }
-            if let pick = candidates.randomElement() {
+            if let pick = candidates.randomElement(using: &rng) {
                 spawnWalker(on: pick)
             }
         }
@@ -711,7 +746,7 @@ final class IsometricSimulation {
         }
 
         // If there are unlit logo edges adjacent, take one
-        if let pick = unlitLogo.randomElement() { return pick }
+        if let pick = unlitLogo.randomElement(using: &rng) { return pick }
 
         // If on a logo node, stay to finish filling it if it has unlit edges
         if !litLogo.isEmpty {
@@ -721,7 +756,7 @@ final class IsometricSimulation {
                     (edgeLitAmount[$0] ?? 0) < 0.3
                 }
                 if thisLogoHasUnlit {
-                    if let pick = litLogo.randomElement() { return pick }
+                    if let pick = litLogo.randomElement(using: &rng) { return pick }
                 }
             }
         }
@@ -729,7 +764,7 @@ final class IsometricSimulation {
         // For the center logo walker on first pass, jump to unlit center logo edges
         if isLogoWalker {
             let unlitCenter = centerLogoEdges.filter { (edgeLitAmount[$0] ?? 0) < 0.3 }
-            if let pick = unlitCenter.randomElement() { return pick }
+            if let pick = unlitCenter.randomElement(using: &rng) { return pick }
         }
 
         // Normal exploration: prefer unlit > dim > bright
@@ -748,9 +783,9 @@ final class IsometricSimulation {
             }
         }
 
-        if let pick = unlit.randomElement() { return pick }
-        if let pick = dim.randomElement() { return pick }
-        if let pick = bright.randomElement() { return pick }
+        if let pick = unlit.randomElement(using: &rng) { return pick }
+        if let pick = dim.randomElement(using: &rng) { return pick }
+        if let pick = bright.randomElement(using: &rng) { return pick }
         return previous  // dead end, reverse
     }
 
@@ -788,7 +823,7 @@ final class IsometricSimulation {
             rippleSpawnTimer = 0
             spawnRipple()
         case .wave:
-            let angle = CGFloat.random(in: 0...(2 * .pi))
+            let angle = CGFloat.random(in: 0...(2 * .pi), using: &rng)
             waveDirection = CGPoint(x: cos(angle), y: sin(angle))
             let corners = [CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: 0),
                            CGPoint(x: size.width, y: size.height), CGPoint(x: 0, y: size.height)]
@@ -880,8 +915,8 @@ final class IsometricSimulation {
                     walkers[i].currentEdge = nextEdge
                     walkerActiveEdges[nextEdge] = (walkers[i].progress, arrivalNode)
                 } else {
-                    let startEdge = activeEdgeArray[Int.random(in: 0..<activeEdgeArray.count)]
-                    let from = Bool.random() ? startEdge.a : startEdge.b
+                    let startEdge = activeEdgeArray[Int.random(in: 0..<activeEdgeArray.count, using: &rng)]
+                    let from = Bool.random(using: &rng) ? startEdge.a : startEdge.b
                     let to = (startEdge.a == from) ? startEdge.b : startEdge.a
                     walkers[i].fromNode = from
                     walkers[i].toNode = to
@@ -901,7 +936,7 @@ final class IsometricSimulation {
         // Wrap when past the screen
         if wavePosition > waveMaxDist {
             // Pick a new random direction for next sweep
-            let angle = CGFloat.random(in: 0...(2 * .pi))
+            let angle = CGFloat.random(in: 0...(2 * .pi), using: &rng)
             waveDirection = CGPoint(x: cos(angle), y: sin(angle))
             let corners = [CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: 0),
                            CGPoint(x: size.width, y: size.height), CGPoint(x: 0, y: size.height)]
@@ -937,8 +972,8 @@ final class IsometricSimulation {
 
     private func spawnRipple() {
         // Random point in the middle 60% of the screen
-        let cx = size.width * CGFloat.random(in: 0.20...0.80)
-        let cy = size.height * CGFloat.random(in: 0.20...0.80)
+        let cx = size.width * CGFloat.random(in: 0.20...0.80, using: &rng)
+        let cy = size.height * CGFloat.random(in: 0.20...0.80, using: &rng)
         let center = CGPoint(x: cx, y: cy)
 
         let corners = [CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: 0),
@@ -1107,6 +1142,11 @@ final class IsometricSimulation {
             frame.instances.append(walkerInstance(edgeIdx: idx, edge: edge,
                                                   progress: progress, fromNode: fromNode))
         }
+
+        // Emit in a fixed order. Both renderers blend source-over, so draw
+        // order is visible where segments cross, and iterating litEdges (a Set)
+        // would make the picture depend on Swift's per-process hash seed.
+        frame.instances.sort { $0.edge < $1.edge }
     }
 
     private func walkerInstance(edgeIdx: Int, edge: GridEdge,

@@ -87,7 +87,8 @@ struct Args {
         var rgb = color.rgb
         if light && rgb.0 > 0.9 && rgb.1 > 0.9 && rgb.2 > 0.9 { rgb = (0, 0, 0) }
         return AnimationConfig(accentR: rgb.0, accentG: rgb.1, accentB: rgb.2,
-                               lightMode: light, movementType: movement)
+                               lightMode: light, movementType: movement,
+                               showFPS: false, seed: seed)
     }
 }
 
@@ -690,6 +691,55 @@ func runWindow(_ args: Args) -> Int32 {
     return 0
 }
 
+// MARK: - Frame hashing (simulation regression detection)
+
+/// The renderer comparison cannot see a simulation regression: it feeds the
+/// SAME frame data to both renderers, so a broken simulation makes both agree
+/// on wrong output. This hashes the simulation's own output instead.
+func runHash(_ args: Args) -> Int32 {
+    guard args.seed != nil else {
+        print("!! hash requires --seed N, otherwise the run is not reproducible")
+        return 64
+    }
+    let sim = IsometricSimulation(config: args.config, size: args.size)
+    var frame = IsometricFrame()
+    sim.start(now: 0)
+
+    // FNV-1a over the instance stream, with the floats quantised so that
+    // harmless last-bit differences do not produce spurious mismatches.
+    var h: UInt64 = 0xcbf29ce484222325
+    @inline(__always) func mix(_ v: UInt64) {
+        var x = v
+        for _ in 0..<8 {
+            h = (h ^ (x & 0xff)) &* 0x100000001b3
+            x >>= 8
+        }
+    }
+    @inline(__always) func mixF(_ f: Float) {
+        mix(UInt64(UInt32(bitPattern: Int32((f * 65536.0).rounded()))))
+    }
+
+    var perFrame: [String] = []
+    for i in 0..<args.frames {
+        sim.tick(now: Double(i) / sim.preferredFPS)
+        sim.fill(frame: &frame)
+        mix(UInt64(frame.instances.count))
+        for inst in frame.instances {
+            mix(UInt64(inst.edge)); mixF(inst.lit); mixF(inst.t0); mixF(inst.t1)
+        }
+        if i % max(args.frames / 10, 1) == 0 {
+            perFrame.append(String(format: "  frame %4d  insts %6d  lit %6d  h=%016llx",
+                                   i, frame.instances.count, sim.litEdgeCount, h))
+        }
+    }
+    print("hash: movement=\(args.movement.rawValue) seed=\(args.seed!) " +
+          "size=\(Int(args.size.width))x\(Int(args.size.height)) frames=\(args.frames)")
+    print("edges: \(sim.totalEdgeCount)")
+    for l in perFrame { print(l) }
+    print(String(format: "DIGEST %016llx", h))
+    return 0
+}
+
 // MARK: - Entry
 
 let args = Args.parse()
@@ -700,8 +750,9 @@ case "sheet":   status = runSheet(args)
 case "bench":   status = runBench(args)
 case "profile": status = runProfile(args)
 case "window":  status = runWindow(args)
+case "hash":    status = runHash(args)
 default:
-    print("unknown command '\(args.command)'. use: compare | sheet | bench | profile | window")
+    print("unknown command '\(args.command)'. use: compare | sheet | bench | profile | window | hash")
     status = 64
 }
 exit(status)

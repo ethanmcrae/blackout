@@ -61,6 +61,26 @@ step "all-black render must FAIL"
 if [ $? -ne 0 ]; then ok; else bad "an empty render was accepted"; fi
 
 echo
+echo "=== simulation output (renderer comparison is blind to this) ==="
+for movement in walkers wave ripple; do
+  step "$movement matches its golden digest"
+  golden="$DIR/goldens/$movement-seed7.digest"
+  if [ ! -f "$golden" ]; then bad "no golden recorded"; continue; fi
+  actual=$("$HARNESS" hash --seed 7 --frames 300 --movement "$movement" 2>/dev/null | grep DIGEST)
+  if [ "$actual" = "$(cat "$golden")" ]; then ok
+  else bad "got $actual, expected $(cat "$golden")"; fi
+done
+
+step "the same seed is reproducible across processes"
+d1=$("$HARNESS" hash --seed 21 --frames 120 --movement walkers 2>/dev/null | grep DIGEST)
+d2=$("$HARNESS" hash --seed 21 --frames 120 --movement walkers 2>/dev/null | grep DIGEST)
+if [ "$d1" = "$d2" ]; then ok; else bad "non-deterministic: $d1 vs $d2"; fi
+
+step "different seeds produce different runs"
+d3=$("$HARNESS" hash --seed 22 --frames 120 --movement walkers 2>/dev/null | grep DIGEST)
+if [ "$d1" != "$d3" ]; then ok; else bad "seed is being ignored"; fi
+
+echo
 echo "=== screen saver bundle loads ==="
 step "compile smoke test"
 if swiftc -O -o "$OUT/saver-smoke" "$DIR/saver-smoke/main.swift" \
