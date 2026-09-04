@@ -15,7 +15,7 @@ mkdir -p "$BUNDLE/Contents/MacOS"
 cp "$DIR/Info.plist" "$BUNDLE/Contents/Info.plist"
 
 # Compile as loadable bundle using shared animation modules
-swiftc \
+swiftc -O \
     -module-name BlackoutSaver \
     -parse-as-library \
     -emit-library \

@@ -13,7 +13,7 @@ cd ~/Documents/Tools/black-screen
 mkdir -p Blackout.app/Contents/{MacOS,Resources}
 cp Blackout/Info.plist Blackout.app/Contents/Info.plist
 cp Blackout/AppIcon.icns Blackout.app/Contents/Resources/
-swiftc -o Blackout.app/Contents/MacOS/Blackout \
+swiftc -O -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
   Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
