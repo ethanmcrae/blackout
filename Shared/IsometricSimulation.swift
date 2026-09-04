@@ -124,7 +124,6 @@ final class IsometricSimulation {
     private var logoEdgeArray: [GridEdge] = []
     private var centerLogoEdges: [GridEdge] = []
     /// Only edges with lit > 0 — avoids iterating all 17k+ edges every frame for fading
-    private var litEdges: Set<GridEdge> = []
     /// Pre-cached screen positions for each edge endpoints
     private var edgeScreenPos: [GridEdge: (CGPoint, CGPoint)] = [:]
     /// Pre-cached midpoints for wave/ripple (avoids recalc every frame)
@@ -141,7 +140,6 @@ final class IsometricSimulation {
     private var logoCompletedAt: [Int: CFTimeInterval] = [:]
     /// Logos that have been fully completed at least once — walkers won't revisit
     private var logoEverCompleted: Set<Int> = []
-    private var edgeLitAmount: [GridEdge: CGFloat] = [:]
     private var cachedPositions: [GridNode: CGPoint] = [:]
 
     // Adjacency for fast wavefront traversal
@@ -156,6 +154,72 @@ final class IsometricSimulation {
     /// pixel comparison stays meaningful. Constant per edge is enough: an edge
     /// spans at most one grid step, over which the falloff changes by <0.03.
     private(set) var edgeVignette: [Float] = []
+
+    // MARK: Index-parallel state
+    //
+    // These replace hashing a 32-byte GridEdge several times per lit edge per
+    // frame. Every array below is indexed by an edge's position in
+    // activeEdgeArray, which is canonically sorted and stable for a generation.
+
+    /// Brightness per edge, 0...1.
+    private var edgeLit: [CGFloat] = []
+    /// Which logo an edge belongs to, or -1.
+    private var edgeLogoIndex: [Int32] = []
+    /// True if the edge is part of any logo.
+    private var edgeIsLogo: [Bool] = []
+    /// Midpoints, split apart so the wave and ripple scans stream two tight
+    /// Float arrays instead of an array of 48-byte tuples.
+    private var edgeMidX: [CGFloat] = []
+    private var edgeMidY: [CGFloat] = []
+    /// Dense list of lit edge indices, with a back-pointer for O(1) removal.
+    private var litList: [Int32] = []
+    private var litSlot: [Int32] = []
+    /// Walker occupying an edge, or -1.
+    private var edgeWalker: [Int32] = []
+    /// Endpoint node indices, for deciding which end a walker entered from.
+    private var edgeNodeA: [GridNode] = []
+    private var edgeNodeB: [GridNode] = []
+    /// Per-logo edge indices.
+    private var perLogoEdgeIdx: [[Int32]] = []
+
+    /// walkerActiveEdges stays the source of truth for walker logic; edgeWalker
+    /// mirrors it so the per-frame loops can test occupancy with an array read
+    /// instead of hashing a GridEdge. All mutation goes through these two.
+    @inline(__always)
+    private func setWalkerEdge(_ edge: GridEdge, progress: CGFloat, from: GridNode) {
+        walkerActiveEdges[edge] = (progress, from)
+        if let i = edgeIndex[edge], i < edgeWalker.count { edgeWalker[i] = 1 }
+    }
+
+    @inline(__always)
+    private func clearWalkerEdge(_ edge: GridEdge) {
+        walkerActiveEdges.removeValue(forKey: edge)
+        if let i = edgeIndex[edge], i < edgeWalker.count { edgeWalker[i] = -1 }
+    }
+
+    /// Brightness for an edge held as a value rather than an index. Only the
+    /// cold paths use this (walker arrival, a few times a second).
+    @inline(__always)
+    private func lit(of edge: GridEdge) -> CGFloat {
+        guard let i = edgeIndex[edge] else { return 0 }
+        return edgeLit[i]
+    }
+
+    @inline(__always)
+    private func markLit(_ i: Int) {
+        if litSlot[i] < 0 { litSlot[i] = Int32(litList.count); litList.append(Int32(i)) }
+    }
+
+    @inline(__always)
+    private func clearLit(_ i: Int) {
+        let slot = litSlot[i]
+        guard slot >= 0 else { return }
+        let last = litList[litList.count - 1]
+        litList[Int(slot)] = last
+        litSlot[Int(last)] = slot
+        litList.removeLast()
+        litSlot[i] = -1
+    }
     /// Bumped on every `generate()`.
     private(set) var generation: Int = 0
 
@@ -205,7 +269,7 @@ final class IsometricSimulation {
 
     // MARK: Stats
 
-    var litEdgeCount: Int { litEdges.count }
+    var litEdgeCount: Int { litList.count }
     var totalEdgeCount: Int { activeEdges.count }
 
     // MARK: Lifecycle
@@ -264,8 +328,7 @@ final class IsometricSimulation {
         centerLogoEdges.removeAll()
         edgeToLogoIndex.removeAll()
         perLogoEdges.removeAll()
-        edgeLitAmount.removeAll()
-        litEdges.removeAll()
+        litList.removeAll()
         logoCompletedAt.removeAll()
         logoEverCompleted.removeAll()
         ripples.removeAll()
@@ -275,6 +338,10 @@ final class IsometricSimulation {
         edgeIndex.removeAll()
         edgeEndpoints.removeAll()
         edgeVignette.removeAll()
+        edgeLit.removeAll(); edgeLogoIndex.removeAll(); edgeIsLogo.removeAll()
+        edgeMidX.removeAll(); edgeMidY.removeAll()
+        litList.removeAll(); litSlot.removeAll(); edgeWalker.removeAll()
+        edgeNodeA.removeAll(); edgeNodeB.removeAll(); perLogoEdgeIdx.removeAll()
         cachedPositions.removeAll()
         adjacency.removeAll()
         walkers.removeAll()
@@ -323,11 +390,7 @@ final class IsometricSimulation {
         // Build adjacency for fast wavefront
         buildAdjacency()
 
-        // Init all edges as unlit
-        for edge in activeEdges {
-            edgeLitAmount[edge] = 0.0
-        }
-        litEdges.removeAll()
+        // Edge brightness lives in edgeLit, allocated below and zeroed.
 
         // Pre-cache screen positions for all edges
         edgeScreenPos.removeAll()
@@ -343,7 +406,11 @@ final class IsometricSimulation {
         edgeIndex.reserveCapacity(activeEdgeArray.count)
         edgeEndpoints.reserveCapacity(activeEdgeArray.count)
         edgeMidpoints.reserveCapacity(activeEdgeArray.count)
-        edgeVignette.reserveCapacity(activeEdgeArray.count)
+        let n = activeEdgeArray.count
+        edgeVignette.reserveCapacity(n)
+        edgeEndpoints.reserveCapacity(n)
+        edgeMidX.reserveCapacity(n); edgeMidY.reserveCapacity(n)
+        edgeNodeA.reserveCapacity(n); edgeNodeB.reserveCapacity(n)
         let vigR = max(hypot(size.width, size.height) * 0.5, 1)
         for (i, edge) in activeEdgeArray.enumerated() {
             edgeIndex[edge] = i
@@ -351,9 +418,21 @@ final class IsometricSimulation {
             edgeEndpoints.append(SIMD4<Float>(Float(pA.x), Float(pA.y), Float(pB.x), Float(pB.y)))
             let mx = (pA.x + pB.x) * 0.5, my = (pA.y + pB.y) * 0.5
             edgeMidpoints.append((edge, mx, my))
+            edgeMidX.append(mx); edgeMidY.append(my)
+            edgeNodeA.append(edge.a); edgeNodeB.append(edge.b)
             let d = min(hypot(mx - midX, my - midY) / vigR, 1.0)
             edgeVignette.append(Float(1.0 - 0.45 * d * d))
         }
+        edgeLit = Array(repeating: 0, count: n)
+        litSlot = Array(repeating: -1, count: n)
+        edgeWalker = Array(repeating: -1, count: n)
+        edgeIsLogo = Array(repeating: false, count: n)
+        edgeLogoIndex = Array(repeating: -1, count: n)
+        for (i, edge) in activeEdgeArray.enumerated() where logoEdges.contains(edge) {
+            edgeIsLogo[i] = true
+            edgeLogoIndex[i] = Int32(edgeToLogoIndex[edge] ?? -1)
+        }
+        perLogoEdgeIdx = perLogoEdges.map { $0.compactMap { edgeIndex[$0].map(Int32.init) } }
 
         needsGeneration = false
         log("generate() done")
@@ -692,12 +771,13 @@ final class IsometricSimulation {
             progress: 0,
             speed: walkerSpeed + Double.random(in: -1.5...1.5, using: &rng)
         ))
-        walkerActiveEdges[edge] = (0, fromNode)
+        setWalkerEdge(edge, progress: 0, from: fromNode)
     }
 
     private func spawnWalkers() {
         walkers.removeAll()
         walkerActiveEdges.removeAll()
+        for i in 0..<edgeWalker.count { edgeWalker[i] = -1 }
         guard !activeEdges.isEmpty else { return }
 
         // Walker 1: start on the center logo specifically
@@ -756,7 +836,7 @@ final class IsometricSimulation {
         var litLogo: [GridEdge] = []
         for edge in validEdges {
             if logoEdges.contains(edge) {
-                if (edgeLitAmount[edge] ?? 0) < 0.3 {
+                if lit(of: edge) < 0.3 {
                     unlitLogo.append(edge)
                 } else {
                     litLogo.append(edge)
@@ -772,7 +852,7 @@ final class IsometricSimulation {
             if let sampleLogoEdge = (unlitLogo + litLogo).first,
                let logoIdx = edgeToLogoIndex[sampleLogoEdge] {
                 let thisLogoHasUnlit = perLogoEdges[logoIdx].contains {
-                    (edgeLitAmount[$0] ?? 0) < 0.3
+                    self.lit(of: $0) < 0.3
                 }
                 if thisLogoHasUnlit {
                     if let pick = litLogo.randomElement(using: &rng) { return pick }
@@ -782,7 +862,7 @@ final class IsometricSimulation {
 
         // For the center logo walker on first pass, jump to unlit center logo edges
         if isLogoWalker {
-            let unlitCenter = centerLogoEdges.filter { (edgeLitAmount[$0] ?? 0) < 0.3 }
+            let unlitCenter = centerLogoEdges.filter { self.lit(of: $0) < 0.3 }
             if let pick = unlitCenter.randomElement(using: &rng) { return pick }
         }
 
@@ -792,7 +872,7 @@ final class IsometricSimulation {
         var bright: [GridEdge] = []
 
         for edge in validEdges {
-            let lit = edgeLitAmount[edge] ?? 0.0
+            let lit = self.lit(of: edge)
             if lit < 0.05 {
                 unlit.append(edge)
             } else if lit < 0.4 {
@@ -910,16 +990,15 @@ final class IsometricSimulation {
             walkers[i].progress += CGFloat(walkers[i].speed) * dt
 
             if let edge = walkers[i].currentEdge {
-                walkerActiveEdges[edge] = (min(walkers[i].progress, 1.0), walkers[i].fromNode)
+                setWalkerEdge(edge, progress: min(walkers[i].progress, 1.0), from: walkers[i].fromNode)
             }
 
             while walkers[i].progress >= 1.0 {
                 walkers[i].progress -= 1.0
 
                 if let edge = walkers[i].currentEdge {
-                    walkerActiveEdges.removeValue(forKey: edge)
-                    edgeLitAmount[edge] = 1.0
-                    litEdges.insert(edge)
+                    clearWalkerEdge(edge)
+                    if let li = edgeIndex[edge] { edgeLit[li] = 1.0; markLit(li) }
                 }
 
                 let arrivalNode = walkers[i].toNode
@@ -932,7 +1011,7 @@ final class IsometricSimulation {
                     walkers[i].toNode = nextTo
                     walkers[i].previousEdge = prevEdge
                     walkers[i].currentEdge = nextEdge
-                    walkerActiveEdges[nextEdge] = (walkers[i].progress, arrivalNode)
+                    setWalkerEdge(nextEdge, progress: walkers[i].progress, from: arrivalNode)
                 } else {
                     let startEdge = activeEdgeArray[Int.random(in: 0..<activeEdgeArray.count, using: &rng)]
                     let from = Bool.random(using: &rng) ? startEdge.a : startEdge.b
@@ -942,7 +1021,7 @@ final class IsometricSimulation {
                     walkers[i].currentEdge = startEdge
                     walkers[i].previousEdge = nil
                     walkers[i].progress = 0
-                    walkerActiveEdges[startEdge] = (0, from)
+                    setWalkerEdge(startEdge, progress: 0, from: from)
                 }
             }
         }
@@ -974,16 +1053,19 @@ final class IsometricSimulation {
         let halfBand = waveBandWidth / 2.0
         let dx = waveDirection.x, dy = waveDirection.y
 
-        for (edge, midX, midY) in edgeMidpoints {
-            let proj = (midX - cx) * dx + (midY - cy) * dy
-            let dist = abs(proj - wavePosition)
+        // Index order here is the same canonical order edgeMidpoints was built
+        // in, so this is the identical sequence of comparisons -- just without
+        // hashing a 32-byte key per edge per frame.
+        let pos = wavePosition
+        for i in 0..<edgeMidX.count {
+            let proj = (edgeMidX[i] - cx) * dx + (edgeMidY[i] - cy) * dy
+            let dist = abs(proj - pos)
 
             if dist < halfBand {
                 let intensity = 1.0 - dist / halfBand
-                let current = edgeLitAmount[edge] ?? 0.0
-                if intensity > current {
-                    edgeLitAmount[edge] = intensity
-                    litEdges.insert(edge)
+                if intensity > edgeLit[i] {
+                    edgeLit[i] = intensity
+                    markLit(i)
                 }
             }
         }
@@ -1033,11 +1115,12 @@ final class IsometricSimulation {
                               rMinSq: rMin * rMin, rMaxSq: rMax * rMax)
         }
 
-        for (edge, midX, midY) in edgeMidpoints {
+        for i in 0..<edgeMidX.count {
+            let mx = edgeMidX[i], my = edgeMidY[i]
             var maxIntensity: CGFloat = 0
             for ring in rings {
-                let dx = midX - ring.cx
-                let dy = midY - ring.cy
+                let dx = mx - ring.cx
+                let dy = my - ring.cy
                 // Use squared distance for quick reject before expensive sqrt
                 let distSq = dx * dx + dy * dy
                 if distSq < ring.rMinSq || distSq > ring.rMaxSq { continue }
@@ -1047,12 +1130,9 @@ final class IsometricSimulation {
                 if intensity > maxIntensity { maxIntensity = intensity }
             }
 
-            if maxIntensity > 0 {
-                let current = edgeLitAmount[edge] ?? 0.0
-                if maxIntensity > current {
-                    edgeLitAmount[edge] = maxIntensity
-                    litEdges.insert(edge)
-                }
+            if maxIntensity > 0, maxIntensity > edgeLit[i] {
+                edgeLit[i] = maxIntensity
+                markLit(i)
             }
         }
     }
@@ -1066,68 +1146,68 @@ final class IsometricSimulation {
         for i in 0..<perLogoEdges.count {
             if logoCompletedAt[i] == nil {
                 // Check if logo just got fully lit
-                let allLit = perLogoEdges[i].allSatisfy { (edgeLitAmount[$0] ?? 0) > 0.3 }
+                let allLit = perLogoEdgeIdx[i].allSatisfy { edgeLit[Int($0)] > 0.3 }
                 if allLit {
                     logoCompletedAt[i] = now
                     logoEverCompleted.insert(i)
                 }
             } else {
                 // Check if logo has fully faded out — reset so it can be re-filled
-                let allDark = perLogoEdges[i].allSatisfy { (edgeLitAmount[$0] ?? 0) < 0.01 }
+                let allDark = perLogoEdgeIdx[i].allSatisfy { edgeLit[Int($0)] < 0.01 }
                 if allDark {
                     logoCompletedAt[i] = nil
                 }
             }
         }
 
-        var toRemove: [GridEdge] = []
-        for edge in litEdges {
-            if walkerActiveEdges[edge] != nil { continue }
-            let current = edgeLitAmount[edge] ?? 0
+        // Iterate the dense lit list backwards so an edge can be removed by
+        // swapping in the last element without disturbing the walk.
+        var k = litList.count - 1
+        while k >= 0 {
+            let i = Int(litList[k])
+            k -= 1
+            if edgeWalker[i] >= 0 { continue }
+            let current = edgeLit[i]
 
-            if logoEdges.contains(edge) {
+            if edgeIsLogo[i] {
                 if current > 0.005 {
-                    if let logoIdx = edgeToLogoIndex[edge],
-                       let completedAt = logoCompletedAt[logoIdx] {
+                    let logoIdx = Int(edgeLogoIndex[i])
+                    if logoIdx >= 0, let completedAt = logoCompletedAt[logoIdx] {
                         let elapsed = now - completedAt
                         if movementType == .walkers || movementType == .random {
                             // Walker mode: hold at 0.5 for 5 seconds, then fade to zero
                             if elapsed < 5.0 {
                                 if current > 0.5 {
-                                    edgeLitAmount[edge] = max(0.5, current * decayFactor)
+                                    edgeLit[i] = max(0.5, current * decayFactor)
                                 }
                             } else {
-                                edgeLitAmount[edge] = current * logoDecayFactor
+                                edgeLit[i] = current * logoDecayFactor
                             }
                         } else {
                             // Wave/ripple: fade immediately
-                            edgeLitAmount[edge] = current * logoDecayFactor
+                            edgeLit[i] = current * logoDecayFactor
                         }
                     } else {
                         // Logo not yet complete — hold at 0.5
                         if current > 0.5 {
-                            edgeLitAmount[edge] = max(0.5, current * decayFactor)
+                            edgeLit[i] = max(0.5, current * decayFactor)
                         }
                     }
                 } else if current > 0 {
-                    edgeLitAmount[edge] = 0
-                    toRemove.append(edge)
+                    edgeLit[i] = 0
+                    clearLit(i)
                     // Reset logo completion so it can be re-lit
-                    if let logoIdx = edgeToLogoIndex[edge] {
-                        logoCompletedAt[logoIdx] = nil
-                    }
+                    let logoIdx = Int(edgeLogoIndex[i])
+                    if logoIdx >= 0 { logoCompletedAt[logoIdx] = nil }
                 }
             } else {
                 if current > removeThreshold {
-                    edgeLitAmount[edge] = current * decayFactor
+                    edgeLit[i] = current * decayFactor
                 } else {
-                    edgeLitAmount[edge] = 0
-                    toRemove.append(edge)
+                    edgeLit[i] = 0
+                    clearLit(i)
                 }
             }
-        }
-        for edge in toRemove {
-            litEdges.remove(edge)
         }
     }
 
@@ -1142,31 +1222,33 @@ final class IsometricSimulation {
         frame.generation = generation
         frame.instances.removeAll(keepingCapacity: true)
 
-        for edge in litEdges {
-            guard let idx = edgeIndex[edge] else { continue }
-            if let (progress, fromNode) = walkerActiveEdges[edge] {
-                appendWalkerInstances(into: &frame, edgeIdx: idx, edge: edge,
-                                      progress: progress, fromNode: fromNode)
+        for slot in 0..<litList.count {
+            let idx = Int(litList[slot])
+            if edgeWalker[idx] >= 0 {
+                let edge = activeEdgeArray[idx]
+                if let (progress, fromNode) = walkerActiveEdges[edge] {
+                    appendWalkerInstances(into: &frame, edgeIdx: idx, edge: edge,
+                                          progress: progress, fromNode: fromNode)
+                }
             } else {
-                let lit = edgeLitAmount[edge] ?? 0.0
-                if lit < 0.01 { continue }
+                let l = edgeLit[idx]
+                if l < 0.01 { continue }
                 frame.instances.append(IsometricInstance(edge: UInt32(idx),
-                                                         lit: Float(lit) * edgeVignette[idx],
+                                                         lit: Float(l) * edgeVignette[idx],
                                                          t0: 0, t1: 1))
             }
         }
 
-        // Walker active edges not yet in litEdges
+        // Walker edges that are not in the lit list yet.
         for (edge, (progress, fromNode)) in walkerActiveEdges {
-            if litEdges.contains(edge) { continue }
-            guard let idx = edgeIndex[edge] else { continue }
+            guard let idx = edgeIndex[edge], litSlot[idx] < 0 else { continue }
             appendWalkerInstances(into: &frame, edgeIdx: idx, edge: edge,
                                   progress: progress, fromNode: fromNode)
         }
 
         // Emit in a fixed order. Both renderers blend source-over, so draw
-        // order is visible where segments cross, and iterating litEdges (a Set)
-        // would make the picture depend on Swift's per-process hash seed.
+        // order is visible where segments cross, and the lit list's order
+        // depends on insertion and removal history.
         frame.instances.sort {
             $0.edge != $1.edge ? $0.edge < $1.edge : $0.t0 < $1.t0
         }
