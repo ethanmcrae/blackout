@@ -50,17 +50,27 @@ final class IsometricCGRenderer {
     private var strokeCache: [Int: CGColor] = [:]
     private var cachedAccent: (CGFloat, CGFloat, CGFloat) = (-1, -1, -1)
 
-    private func strokeColor(_ params: IsometricRenderParams, alpha: CGFloat) -> CGColor {
+    /// Must stay in step with `iso_fragment` in IsometricMetalRenderer, which
+    /// computes the same thing per fragment:
+    ///     mix(accent, hot, pow(lit, 3.0) * 0.2)
+    /// `lit` is constant per instance in both renderers, so the two agree
+    /// exactly rather than approximately.
+    private func strokeColor(_ params: IsometricRenderParams, lit: CGFloat) -> CGColor {
         let accent = (params.accentR, params.accentG, params.accentB)
         if accent != cachedAccent {
             cachedAccent = accent
             strokeCache.removeAll(keepingCapacity: true)
         }
-        let key = Int((alpha * 255).rounded())
+        let key = Int((lit * 255).rounded())
         if let c = strokeCache[key] { return c }
+        let q = CGFloat(key) / 255.0
+        let hot: CGFloat = params.lightMode ? 0.0 : 1.0
+        let t = pow(q, 3.0) * 0.2
         let c = CGColor(colorSpace: Self.colorSpace,
-                        components: [params.accentR, params.accentG, params.accentB,
-                                     CGFloat(key) / 255.0])!
+                        components: [params.accentR + (hot - params.accentR) * t,
+                                     params.accentG + (hot - params.accentG) * t,
+                                     params.accentB + (hot - params.accentB) * t,
+                                     q])!
         strokeCache[key] = c
         return c
     }
@@ -98,7 +108,7 @@ final class IsometricCGRenderer {
             let t0 = CGFloat(inst.t0), t1 = CGFloat(inst.t1)
             if t1 <= t0 { continue }
 
-            ctx.setStrokeColor(strokeColor(params, alpha: CGFloat(inst.lit)))
+            ctx.setStrokeColor(strokeColor(params, lit: CGFloat(inst.lit)))
             ctx.move(to: CGPoint(x: ax + dx * t0, y: ay + dy * t0))
             ctx.addLine(to: CGPoint(x: ax + dx * t1, y: ay + dy * t1))
             ctx.strokePath()

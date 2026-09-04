@@ -75,8 +75,14 @@ final class IsometricSimulation {
     let movementType: MovementType
 
     /// Requested frame rate for the host timer.
+    ///
+    /// 30fps is exactly 4 refresh periods at 120Hz. 24fps is exactly 5, and is
+    /// also the slowest rate a ProMotion panel can hold: its maximum refresh
+    /// interval is 41.7ms, so the old 20fps asked for a 50ms hold the display
+    /// physically could not give, and the cadence was uneven no matter how
+    /// precise the timer was.
     var preferredFPS: Double {
-        (movementType == .walkers || movementType == .random) ? 30.0 : 20.0
+        (movementType == .walkers || movementType == .random) ? 30.0 : 24.0
     }
 
     // Wave state
@@ -143,6 +149,13 @@ final class IsometricSimulation {
 
     /// Static geometry for renderers: (ax, ay, bx, by) in view points, y-up.
     private(set) var edgeEndpoints: [SIMD4<Float>] = []
+    /// Per-edge vignette multiplier, 1.0 at the centre falling to ~0.55 at the
+    /// corners. The generated grid is inset and ends in a hard rectangular
+    /// edge; this softens that and pulls attention off the periphery. It lives
+    /// here, not in a shader, so both renderers apply it identically and the
+    /// pixel comparison stays meaningful. Constant per edge is enough: an edge
+    /// spans at most one grid step, over which the falloff changes by <0.03.
+    private(set) var edgeVignette: [Float] = []
     /// Bumped on every `generate()`.
     private(set) var generation: Int = 0
 
@@ -261,6 +274,7 @@ final class IsometricSimulation {
         activeEdgeArray.removeAll()
         edgeIndex.removeAll()
         edgeEndpoints.removeAll()
+        edgeVignette.removeAll()
         cachedPositions.removeAll()
         adjacency.removeAll()
         walkers.removeAll()
@@ -329,11 +343,16 @@ final class IsometricSimulation {
         edgeIndex.reserveCapacity(activeEdgeArray.count)
         edgeEndpoints.reserveCapacity(activeEdgeArray.count)
         edgeMidpoints.reserveCapacity(activeEdgeArray.count)
+        edgeVignette.reserveCapacity(activeEdgeArray.count)
+        let vigR = max(hypot(size.width, size.height) * 0.5, 1)
         for (i, edge) in activeEdgeArray.enumerated() {
             edgeIndex[edge] = i
             let (pA, pB) = edgeScreenPos[edge]!
             edgeEndpoints.append(SIMD4<Float>(Float(pA.x), Float(pA.y), Float(pB.x), Float(pB.y)))
-            edgeMidpoints.append((edge, (pA.x + pB.x) * 0.5, (pA.y + pB.y) * 0.5))
+            let mx = (pA.x + pB.x) * 0.5, my = (pA.y + pB.y) * 0.5
+            edgeMidpoints.append((edge, mx, my))
+            let d = min(hypot(mx - midX, my - midY) / vigR, 1.0)
+            edgeVignette.append(Float(1.0 - 0.45 * d * d))
         }
 
         needsGeneration = false
@@ -1126,12 +1145,14 @@ final class IsometricSimulation {
         for edge in litEdges {
             guard let idx = edgeIndex[edge] else { continue }
             if let (progress, fromNode) = walkerActiveEdges[edge] {
-                frame.instances.append(walkerInstance(edgeIdx: idx, edge: edge,
-                                                      progress: progress, fromNode: fromNode))
+                appendWalkerInstances(into: &frame, edgeIdx: idx, edge: edge,
+                                      progress: progress, fromNode: fromNode)
             } else {
                 let lit = edgeLitAmount[edge] ?? 0.0
                 if lit < 0.01 { continue }
-                frame.instances.append(IsometricInstance(edge: UInt32(idx), lit: Float(lit), t0: 0, t1: 1))
+                frame.instances.append(IsometricInstance(edge: UInt32(idx),
+                                                         lit: Float(lit) * edgeVignette[idx],
+                                                         t0: 0, t1: 1))
             }
         }
 
@@ -1139,23 +1160,55 @@ final class IsometricSimulation {
         for (edge, (progress, fromNode)) in walkerActiveEdges {
             if litEdges.contains(edge) { continue }
             guard let idx = edgeIndex[edge] else { continue }
-            frame.instances.append(walkerInstance(edgeIdx: idx, edge: edge,
-                                                  progress: progress, fromNode: fromNode))
+            appendWalkerInstances(into: &frame, edgeIdx: idx, edge: edge,
+                                  progress: progress, fromNode: fromNode)
         }
 
         // Emit in a fixed order. Both renderers blend source-over, so draw
         // order is visible where segments cross, and iterating litEdges (a Set)
         // would make the picture depend on Swift's per-process hash seed.
-        frame.instances.sort { $0.edge < $1.edge }
+        frame.instances.sort {
+            $0.edge != $1.edge ? $0.edge < $1.edge : $0.t0 < $1.t0
+        }
     }
 
-    private func walkerInstance(edgeIdx: Int, edge: GridEdge,
-                                progress: CGFloat, fromNode: GridNode) -> IsometricInstance {
+    /// Sub-segments per walker trail, and how the brightness ramps behind the
+    /// head. A walker used to emit its whole traversed range at one flat
+    /// brightness, which made the per-edge decay behind it read as a staircase.
+    private let walkerTrailSteps = 6
+    private let walkerTrailTail: Float = 0.55
+    private var walkerTrailLength: Float { Float(gridSpacing) }
+
+    /// Emit a walker's traversed range as `walkerTrailSteps` collinear pieces,
+    /// each at a constant brightness sampled at its own midpoint. The gradient
+    /// lives in the data rather than in a shader so the Core Graphics
+    /// reference draws exactly the same thing and the pixel comparison keeps
+    /// working -- Core Graphics cannot stroke a gradient without clipping,
+    /// which does not anti-alias the same way.
+    private func appendWalkerInstances(into frame: inout IsometricFrame,
+                                       edgeIdx: Int, edge: GridEdge,
+                                       progress: CGFloat, fromNode: GridNode) {
         let p = Float(min(max(progress, 0), 1))
-        if fromNode == edge.a {
-            return IsometricInstance(edge: UInt32(edgeIdx), lit: 1.0, t0: 0, t1: p)
-        } else {
-            return IsometricInstance(edge: UInt32(edgeIdx), lit: 1.0, t0: 1 - p, t1: 1)
+        guard p > 0 else { return }
+        let v = edgeVignette[edgeIdx]
+        let e = edgeEndpoints[edgeIdx]
+        let len = hypot(e.z - e.x, e.w - e.y)
+        let fromA = (fromNode == edge.a)
+        let steps = walkerTrailSteps
+
+        for k in 0..<steps {
+            let f0 = Float(k) / Float(steps)
+            let f1 = Float(k + 1) / Float(steps)
+            // f == 1 is the head, f == 0 the oldest end of this traversal.
+            let midF = (f0 + f1) * 0.5
+            let behind = (1 - midF) * p * len              // points behind the head
+            let ramp = walkerTrailTail + (1 - walkerTrailTail)
+                     * max(0, min(1, 1 - behind / walkerTrailLength))
+            let t0: Float, t1: Float
+            if fromA { t0 = f0 * p;        t1 = f1 * p }
+            else     { t0 = 1 - f1 * p;    t1 = 1 - f0 * p }
+            frame.instances.append(IsometricInstance(edge: UInt32(edgeIdx),
+                                                     lit: ramp * v, t0: t0, t1: t1))
         }
     }
 }

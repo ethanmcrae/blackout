@@ -11,6 +11,10 @@ struct IsometricUniforms {
     var scale: Float
     var halfWidth: Float
     var accent: SIMD4<Float>
+    /// Colour the brightest segments lean toward: white on a dark ground,
+    /// black on a light one. Mixing toward the ground instead would wash them
+    /// out rather than making them read as hotter.
+    var hot: SIMD4<Float>
 }
 
 // MARK: - Shader
@@ -34,6 +38,7 @@ struct Uniforms {
     float  scale;
     float  halfWidth;
     float4 accent;
+    float4 hot;
 };
 
 struct VOut {
@@ -113,7 +118,11 @@ fragment float4 iso_fragment(VOut in [[stage_in]],
     // fragment is already a no-op. Discarding only marks the pipeline
     // may-discard and costs the early-Z fast path.
     float cov = across * along;
-    return float4(uni.accent.rgb, in.lit * cov);
+    // Warm core: bright segments lean toward the hot colour, dim ones stay
+    // pure accent, so brightness reads as heat. Kept in step with
+    // IsometricCGRenderer.strokeColor -- change both or the diff will catch it.
+    float3 rgb = mix(uni.accent.rgb, uni.hot.rgb, pow(in.lit, 3.0) * 0.2);
+    return float4(rgb, in.lit * cov);
 }
 """
 
@@ -201,7 +210,8 @@ final class IsometricMetalRenderer {
             scale: Float(effectiveScale),
             halfWidth: Float(params.lineWidth * effectiveScale / 2.0),
             accent: SIMD4<Float>(Float(params.accentR), Float(params.accentG),
-                                 Float(params.accentB), 1.0)
+                                 Float(params.accentB), 1.0),
+            hot: params.lightMode ? SIMD4<Float>(0, 0, 0, 1) : SIMD4<Float>(1, 1, 1, 1)
         )
     }
 
@@ -259,7 +269,12 @@ final class IsometricMetalRenderer {
     // MARK: Live presentation
 
     /// Render straight into a CAMetalLayer's next drawable.
-    func render(frame: IsometricFrame, params: IsometricRenderParams, layer: CAMetalLayer) {
+    /// `minimumDuration` tells CoreAnimation how long this frame is meant to
+    /// be held. On a variable-refresh panel that is what lets the display pick
+    /// a matching refresh interval instead of guessing, and lets it drop from
+    /// 120Hz to the content rate.
+    func render(frame: IsometricFrame, params: IsometricRenderParams,
+                layer: CAMetalLayer, minimumDuration: CFTimeInterval = 0) {
         // Wait for a free instance buffer BEFORE taking a drawable. Acquiring
         // the drawable first means blocking while holding one of the layer's
         // small pool, which starves the compositor and shows up as stutter.
@@ -275,7 +290,11 @@ final class IsometricMetalRenderer {
         encode(frame: frame, params: params, texture: drawable.texture, commandBuffer: commandBuffer)
 
         commandBuffer.addCompletedHandler { [inFlight] _ in inFlight.signal() }
-        commandBuffer.present(drawable)
+        if minimumDuration > 0 {
+            commandBuffer.present(drawable, afterMinimumDuration: minimumDuration)
+        } else {
+            commandBuffer.present(drawable)
+        }
         commandBuffer.commit()
     }
 

@@ -104,6 +104,12 @@ final class IsometricModule: NSView, AnimationModule {
                                          height: bounds.height * backingScale)
             // Never block the animation timer waiting on a drawable.
             mLayer.allowsNextDrawableTimeout = true
+            // Two is enough at 24-30fps with a sub-millisecond GPU frame, and
+            // it keeps the drawable wait itself a pacing signal rather than
+            // letting the CPU run a frame ahead. The renderer's 3-slot
+            // in-flight semaphore guards a different resource (CPU writes to
+            // the instance buffers) and only needs to be >= this.
+            mLayer.maximumDrawableCount = 2
         } else {
             layer?.backgroundColor = (config.lightMode ? NSColor.white : NSColor.black).cgColor
         }
@@ -166,9 +172,11 @@ final class IsometricModule: NSView, AnimationModule {
         let timer = Timer(timeInterval: 1.0 / sim.preferredFPS, repeats: true) { [weak self] _ in
             self?.step()
         }
-        // A little tolerance lets the OS coalesce this wakeup with others it is
-        // already making, which matters more for battery than the CPU time.
-        timer.tolerance = (1.0 / sim.preferredFPS) * 0.1
+        // No tolerance. This looked like a free power win, but the panel's
+        // slowest refresh is 41.7ms, so several milliseconds of allowed
+        // lateness is enough on its own to miss a refresh and judder. Pacing
+        // wins over the handful of coalesced wakeups it would have bought.
+        timer.tolerance = 0
         // Add to .common mode so it fires in screen savers and modal panels too
         RunLoop.current.add(timer, forMode: .common)
         animationTimer = timer
@@ -235,7 +243,8 @@ final class IsometricModule: NSView, AnimationModule {
 
         if let renderer = metal, let mLayer = metalLayer {
             renderer.setGeometry(sim.edgeEndpoints, generation: frame_.generation)
-            renderer.render(frame: frame_, params: renderParams, layer: mLayer)
+            renderer.render(frame: frame_, params: renderParams, layer: mLayer,
+                            minimumDuration: 1.0 / sim.preferredFPS)
         } else {
             needsDisplay = true
         }
