@@ -12,6 +12,10 @@ final class OverlayWindow: NSWindow {
     /// Set to true during hide/fade-out to prevent resignKey from re-asserting focus.
     var suppressFocusReassert = false
 
+    /// Set while the unlock animation plays. The overlay is still on screen but
+    /// is no longer a lock: it must not take key focus or swallow keystrokes.
+    var isDismissing = false
+
     private var feedbackLabel: PasswordMarksView = {
         let view = PasswordMarksView(frame: NSRect(x: 0, y: 0, width: 320, height: 60))
         view.isHidden = true
@@ -32,10 +36,11 @@ final class OverlayWindow: NSWindow {
     /// asserted rather than assumed. It silently failed to arrive once.
     var marksSlotCount: Int { feedbackLabel.slotCount }
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeKey: Bool { !isDismissing }
+    override var canBecomeMain: Bool { !isDismissing }
 
     override func keyDown(with event: NSEvent) {
+        if isDismissing { return }
         if event.keyCode == 126 || event.keyCode == 125 {
             onArrowKeyPressed?(event.keyCode)
             return
@@ -132,11 +137,11 @@ final class OverlayWindow: NSWindow {
 
     /// The unlock. The marks expand and dissolve while the overlay's own fade
     /// runs, so success gets a moment without delaying it.
-    func showSuccess() {
+    func showSuccess(over duration: CFTimeInterval = 0.34, expansion: CGFloat = 1.9) {
         feedbackFadeWork?.cancel()
         guard !feedbackLabel.isHidden, feedbackLabel.count > 0 else { return }
         feedbackLabel.alphaValue = 1.0
-        feedbackLabel.playSuccess()
+        feedbackLabel.playSuccess(over: duration, expansion: expansion)
     }
 
     func clearFeedback() {
@@ -471,6 +476,81 @@ final class OverlayManager {
 
     func showSuccessOnPrimary() {
         overlayWindows.first?.showSuccess()
+    }
+
+    // MARK: - Fancy unlock
+
+    static let fancyUnlockKey = "fancyUnlock"
+
+    /// Defaults to on. The plain unlock is still there for anyone who just
+    /// wants the screen back.
+    static var fancyUnlockEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: fancyUnlockKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: fancyUnlockKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: fancyUnlockKey) }
+    }
+
+    /// Unlock with a flourish: the ground drops away at once so the desktop is
+    /// usable immediately, the marks fade over 0.75s, and a bright ring runs
+    /// outward through the grid before the whole thing goes.
+    func hideWithFlourish() {
+        guard isActive else { return }
+        isActive = false
+
+        // Hand the machine back FIRST. Everything after this is decoration and
+        // must not stand between the user and their desktop.
+        NSCursor.unhide()
+        NSApp.presentationOptions = []
+        sleepPrevention.disable()
+        stopFocusGuard()
+        stopLocalKeyMonitor()
+        opacityAdjustmentTimer?.invalidate()
+        opacityAdjustmentTimer = nil
+        currentOpacity = 1.0
+        onStateChanged?()
+
+        let windows = overlayWindows
+        overlayWindows = []
+
+        for window in windows {
+            window.suppressFocusReassert = true
+            window.ignoresMouseEvents = true
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.isDismissing = true
+            window.showSuccess(over: 0.75, expansion: 0.35)
+            (window.contentView as? IsometricModule)?.beginUnlockFlourish()
+        }
+        // Deactivate, do NOT hide. NSApp.hide(nil) hides every window this app
+        // owns, including the overlays that are mid-flourish, so the whole
+        // animation vanished the instant it started.
+        NSApp.deactivate()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.flourishDuration) {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = Self.windowFade
+                // Commit early and settle out, rather than lingering and then
+                // vanishing, which reads as hesitation.
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0.0, 0.4, 1.0)
+                for window in windows { window.animator().alphaValue = 0.0 }
+            }, completionHandler: {
+                for window in windows {
+                    (window.contentView as? IsometricModule)?.stopAnimation()
+                    window.orderOut(nil)
+                }
+            })
+        }
+    }
+
+    /// Start the window fade so it finishes exactly as the flourish does.
+    /// These were set independently and disagreed: the fade began at 0.95s
+    /// against a 1.5s animation, so the last 200ms never rendered and 350ms of
+    /// it played underneath a fade.
+    private static let windowFade: TimeInterval = 0.35
+    private static var flourishDuration: TimeInterval {
+        max(TimeInterval(IsometricSimulation.flourishSpan) - windowFade, 0)
     }
 
     func clearFeedbackOnPrimary() {

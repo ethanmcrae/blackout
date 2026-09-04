@@ -43,6 +43,10 @@ struct Args {
     var crop: CGRect? = nil
     /// Nearest-neighbour magnification for written images.
     var zoom = 1
+    /// In `window` mode, press a key to play the unlock flourish.
+    var flourishKey = false
+    /// Global alpha multiplier, so the renderers can be diffed with it set.
+    var opacity: CGFloat = 1.0
 
     static func parse() -> Args {
         var a = Args()
@@ -57,6 +61,8 @@ struct Args {
             case "--every":    a.sheetEvery = Int(it.next() ?? "") ?? a.sheetEvery
             case "--columns":  a.sheetColumns = Int(it.next() ?? "") ?? a.sheetColumns
             case "--zoom":     a.zoom = Int(it.next() ?? "") ?? a.zoom
+            case "--flourish-key": a.flourishKey = true
+            case "--opacity":  a.opacity = CGFloat(Double(it.next() ?? "") ?? 1.0)
             case "--seconds":  a.seconds = Double(it.next() ?? "") ?? a.seconds
             case "--seed":     a.seed = UInt64(it.next() ?? "")
             case "--crop":
@@ -225,7 +231,9 @@ final class DualRenderer {
 
     init(args: Args) {
         sim = IsometricSimulation(config: args.config, size: args.size)
-        params = IsometricRenderParams(size: args.size, scale: args.scale, config: args.config)
+        var p = IsometricRenderParams(size: args.size, scale: args.scale, config: args.config)
+        p.opacity = args.opacity
+        params = p
         metal = IsometricMetalRenderer()
         sim.start(now: 0)
     }
@@ -681,6 +689,19 @@ func runWindow(_ args: Args) -> Int32 {
           "movement=\(args.movement.rawValue) color=\(args.color.rawValue)")
     print("backing layer: \(type(of: window.contentView!.layer!))")
     print("renderer: \(view.isUsingMetal ? "Metal (GPU)" : "CoreGraphics (CPU)")")
+
+    var keyMonitor: Any?
+    if args.flourishKey {
+        print("press any key to play the unlock flourish over your desktop")
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { _ in
+            view.beginUnlockFlourish()
+            return nil
+        }
+    }
+    _ = keyMonitor
 
     let outPath = "\(args.out)/live-\(args.movement.rawValue).png"
     try? FileManager.default.createDirectory(atPath: args.out, withIntermediateDirectories: true)

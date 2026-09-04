@@ -14,6 +14,13 @@ struct IsometricRenderParams {
     var accentB: CGFloat
     var lightMode: Bool
     var lineWidth: CGFloat = 1.2
+    /// Draw the lines over nothing instead of over the black or white ground.
+    /// Used by the fancy unlock, where the overlay's fill drops away instantly
+    /// and the grid is left drawing over the desktop.
+    var transparentGround: Bool = false
+    /// Multiplies every segment's alpha. The unlock flourish uses it to sit at
+    /// 75% so the colours underneath show through the white.
+    var opacity: CGFloat = 1.0
 
     init(size: CGSize, scale: CGFloat, config: AnimationConfig) {
         self.size = size
@@ -49,6 +56,7 @@ final class IsometricCGRenderer {
     /// otherwise dominates the cost of this path.
     private var strokeCache: [Int: CGColor] = [:]
     private var cachedAccent: (CGFloat, CGFloat, CGFloat) = (-1, -1, -1)
+    private var cachedOpacity: CGFloat = -1
 
     /// Must stay in step with `iso_fragment` in IsometricMetalRenderer, which
     /// computes the same thing per fragment:
@@ -57,8 +65,9 @@ final class IsometricCGRenderer {
     /// exactly rather than approximately.
     private func strokeColor(_ params: IsometricRenderParams, lit: CGFloat) -> CGColor {
         let accent = (params.accentR, params.accentG, params.accentB)
-        if accent != cachedAccent {
+        if accent != cachedAccent || params.opacity != cachedOpacity {
             cachedAccent = accent
+            cachedOpacity = params.opacity
             strokeCache.removeAll(keepingCapacity: true)
         }
         let key = Int((lit * 255).rounded())
@@ -70,7 +79,7 @@ final class IsometricCGRenderer {
                         components: [params.accentR + (hot - params.accentR) * t,
                                      params.accentG + (hot - params.accentG) * t,
                                      params.accentB + (hot - params.accentB) * t,
-                                     q])!
+                                     q * params.opacity])!
         strokeCache[key] = c
         return c
     }
@@ -87,10 +96,15 @@ final class IsometricCGRenderer {
     /// Draw one frame. `ctx` must be y-up with the origin at the bottom-left
     /// and already scaled to points (i.e. 1 unit == 1 point).
     func draw(frame: IsometricFrame, params: IsometricRenderParams, in ctx: CGContext) {
-        let ground: CGFloat = params.lightMode ? 1 : 0
-        ctx.setFillColor(CGColor(colorSpace: Self.colorSpace,
-                                 components: [ground, ground, ground, 1])!)
-        ctx.fill(CGRect(origin: .zero, size: params.size))
+        let bounds = CGRect(origin: .zero, size: params.size)
+        if params.transparentGround {
+            ctx.clear(bounds)
+        } else {
+            let ground: CGFloat = params.lightMode ? 1 : 0
+            ctx.setFillColor(CGColor(colorSpace: Self.colorSpace,
+                                     components: [ground, ground, ground, 1])!)
+            ctx.fill(bounds)
+        }
 
         guard !endpoints.isEmpty else { return }
 

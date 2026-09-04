@@ -65,8 +65,39 @@ final class IsometricModule: NSView, AnimationModule {
     private var renderParams: IsometricRenderParams {
         var p = IsometricRenderParams(size: bounds.size, scale: backingScale, config: config)
         p.lineWidth = 1.2
+        p.transparentGround = groundIsTransparent
+        if groundIsTransparent {
+            // The flourish is drawn against the desktop, not the overlay's own
+            // ground, so it goes white (black on a light ground) rather than in
+            // the accent colour. macOS gives no way to blend a window against
+            // what is behind it, so 75% source-over is as close to "overlay" as
+            // this can get: the colours underneath still read through.
+            let level: CGFloat = config.lightMode ? 0.0 : 1.0
+            p.accentR = level; p.accentG = level; p.accentB = level
+            p.opacity = 0.75
+        }
         return p
     }
+
+    /// Set during the fancy unlock: the overlay's fill drops away instantly and
+    /// the grid keeps drawing over whatever is behind it.
+    private var groundIsTransparent = false
+
+    /// Drop the ground and throw a bright ring outward from the centre.
+    func beginUnlockFlourish() {
+        groundIsTransparent = true
+        if let mLayer = metalLayer {
+            mLayer.isOpaque = false
+            mLayer.backgroundColor = NSColor.clear.cgColor
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+        sim.startUnlockSweep()
+        needsDisplay = true
+    }
+
+    /// True while the unlock ring is still crossing the screen.
+    var isFlourishing: Bool { sim.isSweeping }
 
     private var backingScale: CGFloat {
         window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0

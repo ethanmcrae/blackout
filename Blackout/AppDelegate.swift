@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lightModeMenuItem: NSMenuItem!
     private var showFPSMenuItem: NSMenuItem!
     private var keepAwakeMenuItem: NSMenuItem!
+    private var fancyUnlockMenuItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         loadUnlockMode()
@@ -152,6 +153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(appearanceSubmenuItem)
 
         menu.addItem(.separator())
+
+        fancyUnlockMenuItem = NSMenuItem(title: "Fancy Unlock", action: #selector(toggleFancyUnlock), keyEquivalent: "")
+        fancyUnlockMenuItem.target = self
+        fancyUnlockMenuItem.state = OverlayManager.fancyUnlockEnabled ? .on : .off
+        appearanceMenu.addItem(fancyUnlockMenuItem)
 
         keepAwakeMenuItem = NSMenuItem(title: "Keep Display Awake", action: #selector(toggleKeepAwake), keyEquivalent: "")
         keepAwakeMenuItem.target = self
@@ -282,11 +288,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .clear:
                 overlayManager.clearFeedbackOnPrimary()
             case .unlock:
-                overlayManager.showSuccessOnPrimary()
                 if let setup = setupWindowController, setup.phase == .practice {
+                    // Practice should end promptly and hand back to the wizard.
+                    overlayManager.showSuccessOnPrimary()
                     overlayManager.hide()
                     setup.practiceSucceeded()
+                } else if OverlayManager.fancyUnlockEnabled {
+                    overlayManager.hideWithFlourish()
+                    updateActivateMenuTitle()
                 } else {
+                    overlayManager.showSuccessOnPrimary()
                     overlayManager.hide()
                     updateActivateMenuTitle()
                 }
@@ -336,6 +347,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Holding the display on is the single largest power draw this app causes.
     /// The overlay stays up and locked either way, so this is a preference.
     /// It defaults to on, which is the long-standing behaviour.
+    @objc private func toggleFancyUnlock() {
+        let current = OverlayManager.fancyUnlockEnabled
+        OverlayManager.fancyUnlockEnabled = !current
+        fancyUnlockMenuItem.state = !current ? .on : .off
+    }
+
     @objc private func toggleKeepAwake() {
         let current = SleepPrevention.keepDisplayAwake
         SleepPrevention.keepDisplayAwake = !current

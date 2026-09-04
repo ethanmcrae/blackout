@@ -275,6 +275,160 @@ final class IsometricSimulation {
     private var edgeCellWeights: [SIMD4<Float>] = []
     private var fieldTime: CGFloat = 0
 
+    // MARK: Unlock flourish
+    //
+    // A pulse that spreads through the grid GRAPH rather than as a circle,
+    // with its arrival field warped by smooth noise so the front grows lobes
+    // and inlets instead of staying round.
+    //
+    // Inert until `startUnlockSweep()` is called, and it draws no random
+    // numbers and reads no clock, so the golden digests are untouched.
+
+    /// Arrival time for each edge, in hop-space, warped by smooth noise so the
+    /// front bulges and stalls instead of expanding as a circle.
+    private var flourishHop: [Float] = []
+    /// Per-edge brightness ceiling, so the peak is not uniformly flat.
+    private var flourishCeiling: [Float] = []
+    private var flourishMaxHop: Float = 0
+    private var flourishTime: CGFloat = -1
+    /// Total length of the flourish. OverlayManager derives its own timing from
+    /// this; they used to be set independently and disagreed, so the last 200ms
+    /// never rendered and 350ms of it played underneath a fade.
+    static let flourishSpan: CGFloat = 1.5
+    private let flourishBandMin: Float = 3.0
+    private let flourishBandMax: Float = 7.0
+
+    var isSweeping: Bool { flourishTime >= 0 }
+
+    func startUnlockSweep() {
+        guard nodeCount > 0, !edgeNodeAIdx.isEmpty else { return }
+
+        // Seed from a few nodes spread across the screen.
+        var seeds: [Int32] = []
+        var seedDelay: [Float] = []
+        let targets: [(CGPoint, Float)] = [
+            (CGPoint(x: midX, y: midY), 0),
+            (CGPoint(x: size.width * 0.24, y: size.height * 0.70), 2.2),
+            (CGPoint(x: size.width * 0.78, y: size.height * 0.32), 3.6),
+        ]
+        for (t, delay) in targets {
+            var best = -1; var bestD = CGFloat.greatestFiniteMagnitude
+            for i in 0..<edgeMidX.count {
+                let dx = edgeMidX[i] - t.x, dy = edgeMidY[i] - t.y
+                let d = dx * dx + dy * dy
+                if d < bestD { bestD = d; best = i }
+            }
+            if best >= 0 { seeds.append(edgeNodeAIdx[best]); seedDelay.append(delay) }
+        }
+        guard !seeds.isEmpty else { return }
+
+        // Breadth-first over the node graph, each seed starting a little later
+        // than the last so their fronts are out of step when they meet.
+        var dist = [Float](repeating: -1, count: nodeCount)
+        var queue: [Int32] = []
+        for (k, s) in seeds.enumerated() { dist[Int(s)] = seedDelay[k]; queue.append(s) }
+        var head = 0
+        while head < queue.count {
+            let n = Int(queue[head]); head += 1
+            let d = dist[n] + 1
+            for k in Int(nodeAdjStart[n])..<Int(nodeAdjStart[n + 1]) {
+                let m = Int(nodeAdjList[k])
+                if dist[m] < 0 { dist[m] = d; queue.append(Int32(m)) }
+            }
+        }
+
+        // Warp the arrival field with two octaves of SMOOTH noise. The previous
+        // version used uncorrelated per-edge jitter, which the eye reads as
+        // dither: neighbouring edges disagreed randomly, so the front was a
+        // fuzzy circle rather than a shape. Correlated noise makes neighbours
+        // agree, which is what produces lobes, bays and inlets.
+        var warp = [Float](repeating: 0, count: edgeNodeAIdx.count)
+        updateFieldLattice(scaleX: 0.13, scaleY: 0.13, t: 3.7)
+        for i in 0..<warp.count { warp[i] += Float(sampleField(i) - 0.5) * 2 * 9.0 }
+        updateFieldLattice(scaleX: 0.44, scaleY: 0.44, t: 11.3)
+        for i in 0..<warp.count { warp[i] += Float(sampleField(i) - 0.5) * 2 * 2.6 }
+
+        flourishHop = (0..<edgeNodeAIdx.count).map { i in
+            let a = dist[Int(edgeNodeAIdx[i])], b = dist[Int(edgeNodeBIdx[i])]
+            let base = (a < 0 || b < 0) ? max(a, b) : min(a, b)
+            return max(base, 0) + warp[i]
+        }
+        // A varied ceiling, plus a tenth of the edges that burn to full, so the
+        // peak has grain instead of pinning everything to the same value.
+        flourishCeiling = (0..<edgeNodeAIdx.count).map { i in
+            var h = UInt32(truncatingIfNeeded: i &* 2654435761)
+            h ^= h >> 15
+            let r = Float(h & 0xFFFF) / 65535.0
+            return r < 0.10 ? 1.0 : 0.66 + 0.30 * r
+        }
+        // Calibrate the front's reach on the edges that are actually VISIBLE.
+        // The generated lattice is a parallelogram roughly three times wider
+        // than the screen, so only about a fifth of its edges are on it. Taking
+        // the reach from every edge made the front cross the visible area in
+        // the first quarter of the animation and spend the rest travelling
+        // off-screen, which is why it read as a quick wipe followed by a fade.
+        var visibleMax: Float = 0
+        for i in 0..<flourishHop.count {
+            let mx = edgeMidX[i], my = edgeMidY[i]
+            guard mx >= 0, mx <= size.width, my >= 0, my <= size.height else { continue }
+            if flourishHop[i] > visibleMax { visibleMax = flourishHop[i] }
+        }
+        flourishMaxHop = visibleMax > 0 ? visibleMax : (flourishHop.max() ?? 0)
+        flourishTime = 0
+    }
+
+    private func tickSweep(dt: CGFloat) {
+        guard flourishTime >= 0, !flourishHop.isEmpty else { return }
+        flourishTime += dt
+        if flourishTime > Self.flourishSpan { flourishTime = -1; return }
+
+        let t = Float(flourishTime / Self.flourishSpan)
+        let reach = flourishMaxHop + flourishBandMax
+
+        // The front loads briefly, then releases and decelerates. Constant
+        // speed is the single strongest "mechanical" cue; easing out gives it
+        // mass. The echo uses a gentler exponent so the gap between the two
+        // widens as they slow, which stops them reading as one periodic wave.
+        let u = max(0, min((t - 0.073) / 0.927, 1))
+        let lead = reach * (1 - powf(1 - u, 4))
+        let ue = max(0, min((t - 0.167) / 0.833, 1))
+        let echo = reach * 1.06 * (1 - powf(1 - ue, 3))
+
+        // The band widens as the front slows: energy dispersing.
+        let band = flourishBandMin + (flourishBandMax - flourishBandMin) * u
+
+        // One peak, with a hold. Attack, plateau, then a long release.
+        let envelope: Float
+        if t < 0.267 {
+            let a = t / 0.267
+            envelope = 0.55 + 0.45 * (1 - (1 - a) * (1 - a))
+        } else if t < 0.373 {
+            envelope = 1.0
+        } else {
+            let r = (t - 0.373) / 0.627
+            envelope = 1.0 - 0.86 * Float(0.5 - 0.5 * cos(Double(r) * Double.pi))
+        }
+
+        for i in 0..<flourishHop.count {
+            let hop = flourishHop[i]
+            var v: Float = 0
+            // Squared falloff, not linear: a linear ramp over a wide band puts
+            // most of the screen near full brightness at once, which is a slab
+            // rather than a front.
+            let dl = abs(hop - lead)
+            if dl < band { let f = 1 - dl / band; v = f * f }
+            let de = abs(hop - echo)
+            if de < band {
+                let f = 1 - de / band
+                let e = f * f * 0.45
+                if e > v { v = e }
+            }
+            guard v > 0.02 else { continue }
+            let lit = CGFloat(min(v * envelope * flourishCeiling[i], 1))
+            if lit > edgeLit[i] { edgeLit[i] = lit; markLit(i) }
+        }
+    }
+
     /// Flow direction, slowly rotating.
     private var flowAngle: CGFloat = 0
     /// One sine period. Calling sin() per edge per frame cost more than the
@@ -1192,6 +1346,16 @@ final class IsometricSimulation {
             tickWaveField(dt: CGFloat(dt))
             fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.05, removeThreshold: 0.02)
         }
+        // The flourish rides on top of whatever mode is running, but it needs
+        // the grid to go dark behind its front. Without this extra decay the
+        // front lights the whole lattice within half a second and the pulse
+        // stops reading as travelling at all.
+        if isSweeping {
+            fadeEdges(dt: CGFloat(dt), now: currentTime,
+                      decayPerSecond: 0.02, removeThreshold: 0.04)
+        }
+        tickSweep(dt: CGFloat(dt))
+
         // FPS counter
         fpsFrameCount += 1
         if fpsLastTime == 0 { fpsLastTime = currentTime }

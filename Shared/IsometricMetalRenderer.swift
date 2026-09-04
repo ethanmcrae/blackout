@@ -11,6 +11,11 @@ struct IsometricUniforms {
     var scale: Float
     var halfWidth: Float
     var accent: SIMD4<Float>
+    /// Global alpha multiplier; see IsometricRenderParams.opacity.
+    var opacity: Float
+    var pad0: Float = 0
+    var pad1: Float = 0
+    var pad2: Float = 0
     /// Colour the brightest segments lean toward: white on a dark ground,
     /// black on a light one. Mixing toward the ground instead would wash them
     /// out rather than making them read as hotter.
@@ -38,6 +43,10 @@ struct Uniforms {
     float  scale;
     float  halfWidth;
     float4 accent;
+    float  opacity;
+    float  pad0;
+    float  pad1;
+    float  pad2;
     float4 hot;
 };
 
@@ -122,7 +131,7 @@ fragment float4 iso_fragment(VOut in [[stage_in]],
     // pure accent, so brightness reads as heat. Kept in step with
     // IsometricCGRenderer.strokeColor -- change both or the diff will catch it.
     float3 rgb = mix(uni.accent.rgb, uni.hot.rgb, pow(in.lit, 3.0) * 0.2);
-    return float4(rgb, in.lit * cov);
+    return float4(rgb, in.lit * cov * uni.opacity);
 }
 """
 
@@ -233,6 +242,7 @@ final class IsometricMetalRenderer {
             halfWidth: Float(params.lineWidth * effectiveScale / 2.0),
             accent: SIMD4<Float>(Float(params.accentR), Float(params.accentG),
                                  Float(params.accentB), 1.0),
+            opacity: Float(params.opacity),
             hot: params.lightMode ? SIMD4<Float>(0, 0, 0, 1) : SIMD4<Float>(1, 1, 1, 1)
         )
     }
@@ -253,8 +263,9 @@ final class IsometricMetalRenderer {
     }
 
     private func clearColor(_ params: IsometricRenderParams) -> MTLClearColor {
-        params.lightMode ? MTLClearColor(red: 1, green: 1, blue: 1, alpha: 1)
-                         : MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        if params.transparentGround { return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0) }
+        return params.lightMode ? MTLClearColor(red: 1, green: 1, blue: 1, alpha: 1)
+                                : MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
     }
 
     /// Encode one frame into an existing render pass. Sets up load/clear itself.

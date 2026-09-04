@@ -128,12 +128,18 @@ final class PasswordMarksView: NSView {
 
     /// The unlock. Marks expand and dissolve outward, left to right, riding the
     /// overlay's own fade rather than delaying it.
-    func playSuccess() {
+    /// `expansion` scales how far the marks swell as they go. The quick unlock
+    /// pops them outward; the fancy one lets them drift and fade instead, so
+    /// the sweep behind is the thing that moves.
+    var successExpansion: CGFloat = 1.9
+
+    func playSuccess(over duration: CFTimeInterval = 0.34, expansion: CGFloat = 1.9) {
         guard count > 0 else { return }
         isError = false
         entrancePhase = 1
         successPhase = 0
-        animate(\.successPhase, over: 0.34) { self.successTimer = $0 }
+        successExpansion = expansion
+        animate(\.successPhase, over: duration) { self.successTimer = $0 }
         needsDisplay = true
     }
 
@@ -239,7 +245,7 @@ final class PasswordMarksView: NSView {
             var fade: CGFloat = 1
             if successPhase > 0 {
                 let local = min(max((successPhase - CGFloat(i) * 0.055) / 0.55, 0), 1)
-                scale = 1 + local * 1.9
+                scale = 1 + local * successExpansion
                 fade = 1 - local
                 if fade <= 0 { continue }
             }
