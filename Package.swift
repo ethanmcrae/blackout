@@ -13,6 +13,8 @@ let package = Package(
                 .linkedFramework("IOKit"),
                 .linkedFramework("ServiceManagement"),
                 .linkedFramework("Carbon"),
+                .linkedFramework("Metal"),
+                .linkedFramework("QuartzCore"),
             ]
         ),
     ]

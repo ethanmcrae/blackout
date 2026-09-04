@@ -77,8 +77,37 @@ swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
   Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
   Shared/AnimationModule.swift Shared/IsometricModule.swift \
-  -framework Cocoa -framework Carbon -framework ServiceManagement
+  Shared/IsometricSimulation.swift Shared/IsometricRenderer.swift \
+  Shared/IsometricMetalRenderer.swift \
+  -framework Cocoa -framework Carbon -framework ServiceManagement \
+  -framework Metal -framework QuartzCore
 ```
+
+## Rendering
+
+The isometric animation runs on the GPU through Metal. The simulation that
+decides which grid edges are lit is separate from the code that draws them, and
+a Core Graphics renderer is kept as a reference so GPU output can be diffed
+against CPU output pixel for pixel. On a Mac without Metal the app falls back to
+the Core Graphics path automatically.
+
+Drawing cost dropped from roughly 2.7 ms per frame to 0.03 ms on a 16" display,
+and from 6.4 ms to 0.03 ms on a 34" ultrawide.
+
+### Verifying a change to the animation
+
+```bash
+bash Harness/build.sh
+./Harness/.build/isoharness compare --frames 120 --movement walkers
+./Harness/.build/isoharness sheet   --frames 600 --every 60 --movement walkers
+./Harness/.build/isoharness window  --movement ripple --seconds 8
+./Harness/.build/isoharness bench   --frames 150
+```
+
+`compare` renders every frame through both renderers and reports where they
+disagree. `sheet` writes a contact sheet so the animation over time can be
+looked at. `window` opens a real window and screenshots it. `bench` reports
+per-frame CPU cost.
 
 ## Usage
 

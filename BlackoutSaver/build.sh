@@ -23,8 +23,13 @@ swiftc \
     "$DIR/BlackoutSaverView.swift" \
     "$SHARED/AnimationModule.swift" \
     "$SHARED/IsometricModule.swift" \
+    "$SHARED/IsometricSimulation.swift" \
+    "$SHARED/IsometricRenderer.swift" \
+    "$SHARED/IsometricMetalRenderer.swift" \
     -framework ScreenSaver \
-    -framework Cocoa
+    -framework Cocoa \
+    -framework Metal \
+    -framework QuartzCore
 
 echo "Built: $BUNDLE"
 echo ""

@@ -18,7 +18,10 @@ swiftc -o Blackout.app/Contents/MacOS/Blackout \
   Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
   Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
   Shared/AnimationModule.swift Shared/IsometricModule.swift \
-  -framework Cocoa -framework Carbon -framework ServiceManagement
+  Shared/IsometricSimulation.swift Shared/IsometricRenderer.swift \
+  Shared/IsometricMetalRenderer.swift \
+  -framework Cocoa -framework Carbon -framework ServiceManagement \
+  -framework Metal -framework QuartzCore
 ```
 
 When adding new `.swift` files, add them to the `swiftc` command above AND update the README build section.
@@ -34,6 +37,46 @@ cp -r ~/Documents/Tools/black-screen/Blackout.app /Applications/Blackout.app
 
 Always: build → commit → push → copy to /Applications (replacing the existing app).
 
+## Verifying Animation Changes
+
+IMPORTANT: never change rendering or simulation code without running `Harness/`.
+The animation cannot be checked by reading a diff, and a build that compiles can
+still be visually broken.
+
+```bash
+bash Harness/build.sh
+
+# CPU vs GPU pixel diff -- both renderers get the IDENTICAL frame data, so any
+# disagreement is a rendering bug and nothing else. Exits non-zero on mismatch.
+./Harness/.build/isoharness compare --frames 120 --movement walkers
+./Harness/.build/isoharness compare --frames 120 --movement wave
+./Harness/.build/isoharness compare --frames 120 --movement ripple
+
+# Contact sheet across time -- open the PNG and confirm the animation evolves.
+./Harness/.build/isoharness sheet --frames 600 --every 60 --movement walkers
+
+# Real window, real CAMetalLayer, screenshotted. The compare path does NOT
+# cover the on-screen path (backing layer, drawableSize, contentsScale).
+./Harness/.build/isoharness window --movement ripple --seconds 8
+
+# CPU cost per frame, both renderers.
+./Harness/.build/isoharness bench --frames 150
+```
+
+Useful flags: `--size WxH`, `--scale`, `--color`, `--light`, `--crop x,y,w,h`,
+`--zoom N` (nearest-neighbour magnification, for looking at individual pixels),
+`--out DIR`.
+
+`compare` reports `VERDICT: MATCH` when the only differences are anti-aliasing.
+Healthy numbers are max channel delta under ~15/255, zero pixels disagreeing by
+more than 32/255, and an ink ratio within 0.999-1.001. A structural bug (flipped
+axis, wrong scale, dropped segments) shows up immediately as pixels over 128.
+
+Do NOT verify by activating the real overlay. It sets `NSApp.presentationOptions`
+to disable Cmd+Tab, Force Quit and session termination, and the user's install
+uses password unlock with triple-Escape dismiss turned off -- activating it
+unattended can lock the machine.
+
 ## Architecture
 
 All source lives in `Blackout/` (flat, no nested modules). `Blackout.app/` is committed as pre-built distribution.
@@ -46,7 +89,11 @@ All source lives in `Blackout/` (flat, no nested modules). `Blackout.app/` is co
 | `HotkeyManager.swift` | Global hotkey via Carbon API, triple-Escape detection, key display strings |
 | `SetupWindowController.swift` | Guided wizard (mode select → capture → confirm → practice → done) |
 | `PasswordMatcher.swift` | Character-by-character password validation + KeychainHelper (UserDefaults storage) |
-| `GenerativeBackgroundView.swift` | NSView subclass: isometric grid pattern generation, wavefront animation, Core Graphics drawing |
+| `Shared/IsometricSimulation.swift` | Pure simulation: grid generation, walkers/wave/ripple, fading. No AppKit, no drawing. Emits an `IsometricFrame` of lit segments |
+| `Shared/IsometricRenderer.swift` | `IsometricCGRenderer` — Core Graphics reference renderer, and the shared `IsometricRenderParams` |
+| `Shared/IsometricMetalRenderer.swift` | GPU renderer. One instanced draw call per frame; shader compiled at runtime from a Swift string |
+| `Shared/IsometricModule.swift` | `NSView` host: owns the simulation, drives the timer, renders through Metal (or Core Graphics if Metal is unavailable) |
+| `Harness/main.swift` | Verification tool — see "Verifying Animation Changes" |
 | `SleepPrevention.swift` | IOKit assertion to prevent display sleep while overlay is active |
 
 ## Key Design Decisions
@@ -61,9 +108,32 @@ All source lives in `Blackout/` (flat, no nested modules). `Blackout.app/` is co
 - **Password mode**: hotkey only activates (never deactivates), menu click also cannot deactivate
 - **KeychainHelper** is misnamed — it uses UserDefaults, not the keychain
 
+## Rendering Notes
+
+- **Simulation and rendering are separate.** `IsometricSimulation` decides what is
+  lit; renderers only draw. Both renderers consume the same `IsometricFrame`,
+  which is what makes the CPU/GPU pixel diff meaningful.
+- **The Metal shader is compiled at runtime** with `makeLibrary(source:)`. That
+  keeps the build to plain `swiftc` — there is no `.metal` file and no metallib
+  step, and it does not need a full Xcode install.
+- **Lines are quads, not strokes.** Each lit segment is one instance of a
+  4-vertex triangle strip; the fragment shader computes analytic coverage from
+  the distance to the centre line, giving anti-aliasing without MSAA.
+- **The anti-aliasing ramp is a fixed half pixel.** Widening it by the line's
+  angle looks principled and is wrong — it overshoots Core Graphics by ~10%.
+  The harness catches this as an ink ratio around 1.1.
+- **Colours are built in an explicit sRGB colour space.** `CGColor(red:green:blue:alpha:)`
+  carries an unspecified space, so Core Graphics converts it per stroke and
+  shifts the accent hue in dim pixels. That was a real ~13% ink discrepancy.
+- **Every segment is the accent colour at `alpha = lit`** over a black or white
+  ground. For a single segment that is algebraically identical to the old opaque
+  `accent * lit` formula, and it blends correctly where segments cross.
+
 ## Gotchas
 
 - `setFrame(screen.frame, display: true)` must be called explicitly after window init — contentRect doesn't map correctly to external displays in global coordinates
 - Carbon hotkey callback uses `Unmanaged<HotkeyManager>.fromOpaque()` — must unregister before dealloc or it references dangling memory
 - Local event monitors are not auto-cleaned by NSEvent — manually tracked and removed in `stopLocalKeyMonitor()`
 - PasswordMatcher does "smart re-match": if a wrong character matches the first password character, it advances to position 1 instead of fully resetting
+- The FPS counter is a `CATextLayer` and must be attached *after* `wantsLayer` is set, or it silently never appears
+- `Blackout.app` is ad-hoc signed. After rebuilding the binary, re-sign it with `codesign --force --sign - Blackout.app`, or macOS may refuse to launch it
