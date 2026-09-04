@@ -105,9 +105,14 @@ fragment float4 iso_fragment(VOut in [[stage_in]],
     // Analytic coverage, with the ramp width matched to the line's angle so
     // total ink matches an exact-area rasteriser.
     float across = clamp(uni.halfWidth + 0.5 - abs(in.v), 0.0, 1.0);
-    float along  = clamp(min(in.u, in.segLen - in.u) + 0.5, 0.0, 1.0);
+    // Cap coverage at the segment's own length so a sub-pixel segment is faint
+    // and a zero-length one draws nothing. Without the segLen term a walker at
+    // progress 0 paints a half-covered dot that the CPU reference never draws.
+    float along  = clamp(min(min(in.u, in.segLen - in.u) + 0.5, in.segLen), 0.0, 1.0);
+    // No discard: blending is on and there is no depth buffer, so a zero-alpha
+    // fragment is already a no-op. Discarding only marks the pipeline
+    // may-discard and costs the early-Z fast path.
     float cov = across * along;
-    if (cov <= 0.0) { discard_fragment(); }
     return float4(uni.accent.rgb, in.lit * cov);
 }
 """
@@ -182,12 +187,19 @@ final class IsometricMetalRenderer {
 
     // MARK: Encoding
 
-    private func uniforms(_ params: IsometricRenderParams) -> IsometricUniforms {
-        IsometricUniforms(
-            viewportPx: SIMD2<Float>(Float(params.size.width * params.scale),
-                                     Float(params.size.height * params.scale)),
-            scale: Float(params.scale),
-            halfWidth: Float(params.lineWidth * params.scale / 2.0),
+    /// `targetPx` is the real size of the texture being rendered into. Deriving
+    /// the viewport from the view's bounds instead lets the two disagree during
+    /// a resize or a move between displays of different backing scale, which
+    /// draws the grid at a subtly wrong scale for a frame or more.
+    private func uniforms(_ params: IsometricRenderParams, targetPx: SIMD2<Float>) -> IsometricUniforms {
+        // Points -> pixels for THIS target, rather than a separately tracked scale.
+        let effectiveScale = params.size.width > 0
+            ? CGFloat(targetPx.x) / params.size.width
+            : params.scale
+        return IsometricUniforms(
+            viewportPx: targetPx,
+            scale: Float(effectiveScale),
+            halfWidth: Float(params.lineWidth * effectiveScale / 2.0),
             accent: SIMD4<Float>(Float(params.accentR), Float(params.accentG),
                                  Float(params.accentB), 1.0)
         )
@@ -196,7 +208,10 @@ final class IsometricMetalRenderer {
     private func instanceBuffer(for count: Int) -> MTLBuffer? {
         let idx = bufferIndex
         if instanceCapacity[idx] < count || instanceBuffers[idx] == nil {
-            let capacity = max(count, 4096)
+            // Round up to a power of two so a slowly rising lit count does not
+            // reallocate every frame across all three slots. Never shrink.
+            var capacity = max(count, 4096)
+            capacity = 1 << (Int.bitWidth - (capacity - 1).leadingZeroBitCount)
             instanceBuffers[idx] = device.makeBuffer(
                 length: capacity * MemoryLayout<IsometricInstance>.stride,
                 options: .storageModeShared)
@@ -228,7 +243,8 @@ final class IsometricMetalRenderer {
             frame.instances.withUnsafeBytes { raw in
                 instBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
             }
-            var uni = uniforms(params)
+            var uni = uniforms(params, targetPx: SIMD2<Float>(Float(texture.width),
+                                                              Float(texture.height)))
             encoder.setRenderPipelineState(pipeline)
             encoder.setVertexBuffer(instBuf, offset: 0, index: 0)
             encoder.setVertexBuffer(edges, offset: 0, index: 1)
@@ -244,10 +260,17 @@ final class IsometricMetalRenderer {
 
     /// Render straight into a CAMetalLayer's next drawable.
     func render(frame: IsometricFrame, params: IsometricRenderParams, layer: CAMetalLayer) {
-        guard let drawable = layer.nextDrawable(),
-              let commandBuffer = queue.makeCommandBuffer() else { return }
-
+        // Wait for a free instance buffer BEFORE taking a drawable. Acquiring
+        // the drawable first means blocking while holding one of the layer's
+        // small pool, which starves the compositor and shows up as stutter.
         inFlight.wait()
+
+        guard let drawable = layer.nextDrawable(),
+              let commandBuffer = queue.makeCommandBuffer() else {
+            inFlight.signal()
+            return
+        }
+
         bufferIndex = (bufferIndex + 1) % Self.bufferCount
         encode(frame: frame, params: params, texture: drawable.texture, commandBuffer: commandBuffer)
 
@@ -308,6 +331,11 @@ final class IsometricMetalRenderer {
         guard let texture = offscreenTexture,
               let commandBuffer = queue.makeCommandBuffer() else { return nil }
 
+        // Take the same semaphore the other encode paths take. Without this,
+        // `bench` interleaves the two and the in-flight count drifts, so a
+        // buffer can be rewritten while the GPU is still reading it.
+        inFlight.wait()
+        defer { inFlight.signal() }
         bufferIndex = (bufferIndex + 1) % Self.bufferCount
         encode(frame: frame, params: params, texture: texture, commandBuffer: commandBuffer)
 

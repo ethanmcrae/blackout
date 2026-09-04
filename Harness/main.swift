@@ -38,6 +38,8 @@ struct Args {
     /// Crop rect in points, applied to the images written out by `compare`.
     var seconds = 6.0
     /// Crop rect in points, applied to the images written out by `compare`.
+    var seed: UInt64? = nil
+    /// Crop rect in points, applied to the images written out by `compare`.
     var crop: CGRect? = nil
     /// Nearest-neighbour magnification for written images.
     var zoom = 1
@@ -56,6 +58,7 @@ struct Args {
             case "--columns":  a.sheetColumns = Int(it.next() ?? "") ?? a.sheetColumns
             case "--zoom":     a.zoom = Int(it.next() ?? "") ?? a.zoom
             case "--seconds":  a.seconds = Double(it.next() ?? "") ?? a.seconds
+            case "--seed":     a.seed = UInt64(it.next() ?? "")
             case "--crop":
                 if let v = it.next() {
                     let p = v.split(separator: ",").compactMap { Double($0) }
@@ -153,10 +156,14 @@ struct DiffStats {
 
 /// Compare two images and optionally build an amplified difference image.
 func diff(_ a: CGImage, _ b: CGImage, makeImage: Bool) -> (DiffStats, CGImage?) {
-    guard let ra = rasterize(a), let rb = rasterize(b),
-          ra.w == rb.w, ra.h == rb.h else {
+    guard let ra = rasterize(a), let rb = rasterize(b) else {
+        print("!! could not rasterise a rendered frame")
+        exit(2)
+    }
+    guard ra.w == rb.w, ra.h == rb.h else {
         print("!! size mismatch: \(a.width)x\(a.height) vs \(b.width)x\(b.height)")
-        return (DiffStats(), nil)
+        print("   That is a structural failure, not a tolerance question.")
+        exit(2)
     }
 
     var s = DiffStats()
@@ -273,46 +280,60 @@ func runCompare(_ args: Args) -> Int32 {
     print("")
     print(String(format: "%6s %8s %8s %9s %9s %9s %9s %8s",
                  ("frame" as NSString).utf8String!, ("insts" as NSString).utf8String!,
-                 ("maxΔ" as NSString).utf8String!, ("meanΔ" as NSString).utf8String!,
+                 ("maxD" as NSString).utf8String!, ("meanD" as NSString).utf8String!,
                  (">8" as NSString).utf8String!, (">32" as NSString).utf8String!,
                  (">128" as NSString).utf8String!, ("ink" as NSString).utf8String!))
 
-    var worst = DiffStats()
+    var worstMean = -1.0
     var worstFrame = -1
+    var worstPair: (CGImage, CGImage)? = nil
     var totalMean = 0.0
-    var totalOver32 = 0
-    var totalPixels = 0
+
+    // Per-frame maxima. Averaging a disagreement across the whole run buries a
+    // single catastrophic frame under a hundred clean ones.
+    var maxOver32Fraction = 0.0
     var maxOver128Fraction = 0.0
+    var maxChannelDelta = 0
+
+    // Liveness. Two renderers agreeing on an empty screen is not a pass.
+    var framesWithInstances = 0
+    var litFractionSum = 0.0
+    var emptyInstanceFrames: [Int] = []
 
     for i in 0..<args.frames {
         dual.advance(to: i)
         guard let a = dual.renderCG(), let b = dual.renderMetal() else {
             print("!! render failed at frame \(i)"); return 2
         }
-        let keep = (i % max(args.frames / 8, 1) == 0) || i == args.frames - 1
         let (s, _) = diff(a, b, makeImage: false)
+        let px = Double(max(s.totalPixels, 1))
+
         totalMean += s.meanAbsDelta
-        totalOver32 += s.pixelsOver32
-        totalPixels += s.totalPixels
-        maxOver128Fraction = max(maxOver128Fraction,
-                                 Double(s.pixelsOver128) / Double(max(s.totalPixels, 1)))
+        maxOver32Fraction = max(maxOver32Fraction, Double(s.pixelsOver32) / px)
+        maxOver128Fraction = max(maxOver128Fraction, Double(s.pixelsOver128) / px)
+        maxChannelDelta = max(maxChannelDelta, s.maxChannelDelta)
 
-        if s.meanAbsDelta > worst.meanAbsDelta { worst = s; worstFrame = i }
+        if dual.frame.instances.isEmpty { emptyInstanceFrames.append(i) } else { framesWithInstances += 1 }
+        litFractionSum += Double(s.litPixelsA) / px
 
-        if keep {
+        if s.meanAbsDelta > worstMean {
+            worstMean = s.meanAbsDelta
+            worstFrame = i
+            // Keep the images from THIS pass. Re-running the simulation to
+            // reach the worst frame draws fresh random numbers and produces a
+            // different frame, so the saved picture would not be the failure.
+            worstPair = (a, b)
+        }
+
+        if (i % max(args.frames / 8, 1) == 0) || i == args.frames - 1 {
             print(String(format: "%6d %8d %8d %9.4f %9d %9d %9d %8.4f",
                          i, dual.frame.instances.count, s.maxChannelDelta, s.meanAbsDelta,
                          s.pixelsOver8, s.pixelsOver32, s.pixelsOver128, s.inkRatio))
         }
     }
 
-    // Re-render the worst frame and dump images for eyeballing.
-    let dual2 = DualRenderer(args: args)
-    for i in 0...max(worstFrame, 0) { dual2.advance(to: i) }
-    if let a = dual2.renderCG(), let b = dual2.renderMetal() {
-        let (ws, d) = diff(a, b, makeImage: true)
-        print(String(format: "worst frame lit pixels: cpu=%d gpu=%d   ink: cpu=%.0f gpu=%.0f",
-                     ws.litPixelsA, ws.litPixelsB, ws.inkA, ws.inkB))
+    if let (a, b) = worstPair {
+        let (_, d) = diff(a, b, makeImage: true)
         let za = cropZoom(a, crop: args.crop, scale: args.scale, zoom: args.zoom) ?? a
         let zb = cropZoom(b, crop: args.crop, scale: args.scale, zoom: args.zoom) ?? b
         let zd = d.flatMap { cropZoom($0, crop: args.crop, scale: args.scale, zoom: args.zoom) }
@@ -325,21 +346,60 @@ func runCompare(_ args: Args) -> Int32 {
     }
 
     let meanAvg = totalMean / Double(args.frames)
-    let over32Frac = Double(totalOver32) / Double(max(totalPixels, 1))
-    print("")
-    print(String(format: "worst frame: %d   mean |Δ| avg over run: %.4f/255", worstFrame, meanAvg))
-    print(String(format: "pixels disagreeing by >32/255: %.5f%% of all pixels", over32Frac * 100))
-    print(String(format: "worst frame's >128/255 disagreement: %.5f%% of pixels", maxOver128Fraction * 100))
-    print("images: \(args.out)/worst-{cpu,metal,diff,sidebyside}.png")
+    let meanLitFraction = litFractionSum / Double(args.frames)
+    let instanceCoverage = Double(framesWithInstances) / Double(args.frames)
 
-    // A structural mismatch (wrong geometry, flipped axis, missing segments)
-    // shows up as a large fraction of hard disagreements. Anti-aliasing
-    // differences show up as a tiny mean with almost nothing over 128.
-    let structural = maxOver128Fraction > 0.002 || over32Frac > 0.01
     print("")
-    print(structural ? "VERDICT: STRUCTURAL MISMATCH — renderers disagree beyond anti-aliasing"
-                     : "VERDICT: MATCH — differences are anti-aliasing only")
-    return structural ? 1 : 0
+    print(String(format: "worst frame: %d   mean |D| avg over run: %.4f/255", worstFrame, meanAvg))
+    print(String(format: "max channel delta, any frame:        %d/255", maxChannelDelta))
+    print(String(format: "worst frame's >32/255 disagreement:  %.5f%% of pixels", maxOver32Fraction * 100))
+    print(String(format: "worst frame's >128/255 disagreement: %.5f%% of pixels", maxOver128Fraction * 100))
+    print(String(format: "mean lit pixels (CPU reference):     %.4f%% of the frame", meanLitFraction * 100))
+    print(String(format: "frames that drew anything:           %.0f%%", instanceCoverage * 100))
+    print("images: \(args.out)/worst-{cpu,metal,diff,sidebyside}.png")
+    print("")
+
+    // Explicit checks, each reported. A pass has to mean "the renderers agree
+    // AND there was something to agree about".
+    struct Check { let name: String; let ok: Bool; let detail: String }
+    var checks: [Check] = []
+
+    checks.append(Check(name: "renderers agree structurally",
+                        ok: maxOver128Fraction <= 0.002,
+                        detail: String(format: "worst frame %.5f%% of pixels differ by >128 (limit 0.2%%)",
+                                       maxOver128Fraction * 100)))
+    checks.append(Check(name: "renderers agree beyond anti-aliasing",
+                        ok: maxOver32Fraction <= 0.01,
+                        detail: String(format: "worst frame %.5f%% of pixels differ by >32 (limit 1%%)",
+                                       maxOver32Fraction * 100)))
+    // Liveness floors. Without these an all-black render passes trivially:
+    // two renderers that both draw nothing agree perfectly.
+    checks.append(Check(name: "something was actually drawn",
+                        ok: meanLitFraction >= 0.0002,
+                        detail: String(format: "mean lit %.4f%% of the frame (floor 0.02%%)",
+                                       meanLitFraction * 100)))
+    checks.append(Check(name: "the animation produced segments",
+                        ok: instanceCoverage >= 0.75,
+                        detail: emptyInstanceFrames.isEmpty
+                            ? String(format: "%.0f%% of frames drew segments", instanceCoverage * 100)
+                            : String(format: "%.0f%% of frames drew segments; %d empty (first: %d)",
+                                     instanceCoverage * 100, emptyInstanceFrames.count,
+                                     emptyInstanceFrames.first!)))
+    checks.append(Check(name: "the grid is not degenerate",
+                        ok: dual.sim.totalEdgeCount > 100,
+                        detail: "\(dual.sim.totalEdgeCount) edges generated (floor 100)"))
+
+    for c in checks {
+        print("  [\(c.ok ? "PASS" : "FAIL")] \(c.name) — \(c.detail)")
+    }
+    let failed = checks.filter { !$0.ok }
+    print("")
+    if failed.isEmpty {
+        print("VERDICT: MATCH — differences are anti-aliasing only")
+        return 0
+    }
+    print("VERDICT: FAIL — \(failed.map { $0.name }.joined(separator: "; "))")
+    return 1
 }
 
 /// Lay images out left-to-right with captions.
