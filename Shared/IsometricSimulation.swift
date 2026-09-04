@@ -82,7 +82,10 @@ final class IsometricSimulation {
     /// physically could not give, and the cadence was uneven no matter how
     /// precise the timer was.
     var preferredFPS: Double {
-        (movementType == .walkers || movementType == .random) ? 30.0 : 24.0
+        switch movementType {
+        case .walkers, .random, .waveField: return 30.0
+        default:                            return 24.0
+        }
     }
 
     // Wave state
@@ -97,12 +100,15 @@ final class IsometricSimulation {
         var center: CGPoint
         var radius: CGFloat
         var maxRadius: CGFloat
+        /// Edges bucketed by distance from this ripple's centre, built once at
+        /// spawn so each frame only visits the annulus the ring is crossing.
+        var buckets = BucketIndex()
     }
     private var ripples: [Ripple] = []
     private var rippleSpawnTimer: CGFloat = 0.0
     private let rippleSpeed: CGFloat = 55.0
-    private let rippleBandWidth: CGFloat = 40.0
-    private let rippleSpawnInterval: CGFloat = 6.0
+    private let rippleBandWidth: CGFloat = 64.0
+    private let rippleSpawnInterval: CGFloat = 2.2
 
     // MARK: Size
 
@@ -181,6 +187,112 @@ final class IsometricSimulation {
     private var edgeNodeB: [GridNode] = []
     /// Per-logo edge indices.
     private var perLogoEdgeIdx: [[Int32]] = []
+
+    /// Edge indices sorted into fixed-width buckets by some scalar key, so a
+    /// narrow band can be found without scanning every edge. Built once when
+    /// the key changes (a wave direction change, a ripple spawn) and reused
+    /// every frame after.
+    private struct BucketIndex {
+        var start: [Int32] = []     // bucket i occupies edges[start[i]..<start[i+1]]
+        var edges: [Int32] = []
+        var minKey: CGFloat = 0
+        var width: CGFloat = 1
+
+        var bucketCount: Int { max(start.count - 1, 0) }
+
+        /// Buckets covering [lo, hi], clamped. Returns an empty range if the
+        /// span misses the index entirely.
+        func range(lo: CGFloat, hi: CGFloat) -> Range<Int> {
+            guard bucketCount > 0, hi >= lo else { return 0..<0 }
+            let a = Int(((lo - minKey) / width).rounded(.down))
+            let b = Int(((hi - minKey) / width).rounded(.down))
+            if b < 0 || a >= bucketCount { return 0..<0 }
+            return max(a, 0)..<min(b + 1, bucketCount)
+        }
+
+        /// Counting-sort `keys` (one per edge) into buckets of `width`.
+        static func build(keys: [CGFloat], width: CGFloat) -> BucketIndex {
+            var idx = BucketIndex()
+            guard !keys.isEmpty, width > 0 else { return idx }
+            var lo = keys[0], hi = keys[0]
+            for k in keys { if k < lo { lo = k }; if k > hi { hi = k } }
+            let count = max(Int(((hi - lo) / width).rounded(.down)) + 1, 1)
+            idx.minKey = lo
+            idx.width = width
+
+            var counts = [Int32](repeating: 0, count: count + 1)
+            var bucketOf = [Int32](repeating: 0, count: keys.count)
+            for (i, k) in keys.enumerated() {
+                let b = min(max(Int(((k - lo) / width).rounded(.down)), 0), count - 1)
+                bucketOf[i] = Int32(b)
+                counts[b + 1] += 1
+            }
+            for b in 1...count { counts[b] += counts[b - 1] }
+            idx.start = counts
+            idx.edges = [Int32](repeating: 0, count: keys.count)
+            var cursor = counts
+            for i in 0..<keys.count {
+                let b = Int(bucketOf[i])
+                idx.edges[Int(cursor[b])] = Int32(i)
+                cursor[b] += 1
+            }
+            return idx
+        }
+    }
+
+    /// Projection of each edge midpoint onto the current wave axis, and the
+    /// bucket index over it. Rebuilt only when the wave direction changes.
+    private var waveProj: [CGFloat] = []
+    private var waveBuckets = BucketIndex()
+
+    /// Per-frame accumulator for overlapping ripple fronts, plus the list of
+    /// edges it touched so it can be cleared without scanning everything.
+    private var rippleAccum: [CGFloat] = []
+    private var rippleTouched: [Int32] = []
+
+    // MARK: New-mode state
+
+    /// Terrain height each edge was generated at, or -1 for logo edges. The
+    /// generator already computes these and used to throw them away.
+    private var edgeHeight: [Int8] = []
+    private var edgeHeightMap: [GridEdge: Int] = [:]
+    private var terrainLevel: CGFloat = 0
+    private var terrainMaxHeight: Int = 3
+    /// Height combined with position along a fixed diagonal, so the reveal
+    /// travels across the landscape instead of flashing every block of one
+    /// height at once. Static per generation, so it can be bucketed.
+    private var terrainKey: [CGFloat] = []
+    private var terrainKeyRange: ClosedRange<CGFloat> = 0...1
+    private var terrainBuckets = BucketIndex()
+
+    /// Coarse lattice used by the field modes. Evaluating smooth noise once per
+    /// lattice cell and sampling it per edge is far cheaper than evaluating it
+    /// per edge, and the field is low-frequency so nothing is lost.
+    private var fieldCols = 0
+    private var fieldRows = 0
+    private var fieldValues: [CGFloat] = []
+    private var edgeCellIndex: [Int32] = []
+    private var edgeCellWeights: [SIMD4<Float>] = []
+    private var fieldTime: CGFloat = 0
+
+    /// Flow direction, slowly rotating.
+    private var flowAngle: CGFloat = 0
+    /// One sine period. Calling sin() per edge per frame cost more than the
+    /// entire rest of the simulation put together.
+    private static let sineTable: [CGFloat] = (0..<4096).map {
+        sin(CGFloat($0) / 4096.0 * 2 * .pi)
+    }
+
+    /// Wave-field (physics) state, one value per grid node.
+    private var nodeIndexOf: [GridNode: Int32] = [:]
+    private var nodeCount = 0
+    private var nodeAdjStart: [Int32] = []
+    private var nodeAdjList: [Int32] = []
+    private var nodeU: [CGFloat] = []
+    private var nodeUPrev: [CGFloat] = []
+    private var edgeNodeAIdx: [Int32] = []
+    private var edgeNodeBIdx: [Int32] = []
+    private var waveFieldImpulseTimer: CGFloat = 0
 
     /// walkerActiveEdges stays the source of truth for walker logic; edgeWalker
     /// mirrors it so the per-frame loops can test occupancy with an array read
@@ -325,6 +437,7 @@ final class IsometricSimulation {
         activeEdges.removeAll()
         logoEdges.removeAll()
         logoEdgeArray.removeAll()
+        edgeHeightMap.removeAll()
         centerLogoEdges.removeAll()
         edgeToLogoIndex.removeAll()
         perLogoEdges.removeAll()
@@ -424,6 +537,8 @@ final class IsometricSimulation {
             edgeVignette.append(Float(1.0 - 0.45 * d * d))
         }
         edgeLit = Array(repeating: 0, count: n)
+        rippleAccum = Array(repeating: 0, count: n)
+        rippleTouched.removeAll(keepingCapacity: true)
         litSlot = Array(repeating: -1, count: n)
         edgeWalker = Array(repeating: -1, count: n)
         edgeIsLogo = Array(repeating: false, count: n)
@@ -434,8 +549,83 @@ final class IsometricSimulation {
         }
         perLogoEdgeIdx = perLogoEdges.map { $0.compactMap { edgeIndex[$0].map(Int32.init) } }
 
+        buildModeIndices()
+
         needsGeneration = false
         log("generate() done")
+    }
+
+    /// Per-edge data the field and physics modes need. Built once per
+    /// generation, alongside the geometry.
+    private func buildModeIndices() {
+        let n = activeEdgeArray.count
+        guard n > 0 else { return }
+
+        // Terrain height per edge; logo edges carry -1.
+        edgeHeight = activeEdgeArray.map { edge in
+            guard !logoEdges.contains(edge), let h = edgeHeightMap[edge] else { return Int8(-1) }
+            return Int8(clamping: h)
+        }
+        terrainMaxHeight = max(Int(edgeHeight.max() ?? 3), 1)
+
+        let dq = 0.7071067811865476 as CGFloat
+        terrainKey = (0..<n).map { i in
+            let h = edgeHeight[i]
+            let spatial = (edgeMidX[i] * dq + edgeMidY[i] * dq) / 260.0
+            // Logo edges sit slightly ahead of the ground so they lead the sweep.
+            return spatial + (h < 0 ? 0.4 : CGFloat(h) * 0.5)
+        }
+        if let lo = terrainKey.min(), let hi = terrainKey.max() {
+            terrainKeyRange = lo...hi
+            terrainBuckets = BucketIndex.build(keys: terrainKey, width: 0.35)
+        }
+
+        // Coarse lattice for the field modes, about one cell per 48 points.
+        fieldCols = max(Int(size.width / 48) + 2, 4)
+        fieldRows = max(Int(size.height / 48) + 2, 4)
+        fieldValues = Array(repeating: 0, count: fieldCols * fieldRows)
+        edgeCellIndex = Array(repeating: 0, count: n)
+        edgeCellWeights = Array(repeating: .zero, count: n)
+        let cw = size.width / CGFloat(fieldCols - 1)
+        let ch = size.height / CGFloat(fieldRows - 1)
+        for i in 0..<n {
+            let gx = min(max(edgeMidX[i] / cw, 0), CGFloat(fieldCols - 1) - 0.0001)
+            let gy = min(max(edgeMidY[i] / ch, 0), CGFloat(fieldRows - 1) - 0.0001)
+            let x0 = Int(gx), y0 = Int(gy)
+            let fx = Float(gx - CGFloat(x0)), fy = Float(gy - CGFloat(y0))
+            edgeCellIndex[i] = Int32(y0 * fieldCols + x0)
+            edgeCellWeights[i] = SIMD4<Float>((1 - fx) * (1 - fy), fx * (1 - fy),
+                                              (1 - fx) * fy, fx * fy)
+        }
+
+        // Node graph for the wave-field mode.
+        nodeIndexOf.removeAll()
+        var neighbours: [[Int32]] = []
+        func nodeIdx(_ node: GridNode) -> Int32 {
+            if let i = nodeIndexOf[node] { return i }
+            let i = Int32(neighbours.count)
+            nodeIndexOf[node] = i
+            neighbours.append([])
+            return i
+        }
+        edgeNodeAIdx = Array(repeating: 0, count: n)
+        edgeNodeBIdx = Array(repeating: 0, count: n)
+        for (i, edge) in activeEdgeArray.enumerated() {
+            let a = nodeIdx(edge.a), b = nodeIdx(edge.b)
+            edgeNodeAIdx[i] = a; edgeNodeBIdx[i] = b
+            neighbours[Int(a)].append(b)
+            neighbours[Int(b)].append(a)
+        }
+        nodeCount = neighbours.count
+        nodeAdjStart = [Int32](repeating: 0, count: nodeCount + 1)
+        for i in 0..<nodeCount { nodeAdjStart[i + 1] = nodeAdjStart[i] + Int32(neighbours[i].count) }
+        nodeAdjList = [Int32](repeating: 0, count: Int(nodeAdjStart[nodeCount]))
+        for i in 0..<nodeCount {
+            let base = Int(nodeAdjStart[i])
+            for (k, nb) in neighbours[i].enumerated() { nodeAdjList[base + k] = nb }
+        }
+        nodeU = Array(repeating: 0, count: nodeCount)
+        nodeUPrev = Array(repeating: 0, count: nodeCount)
     }
 
     // MARK: - Logo Definition
@@ -598,9 +788,15 @@ final class IsometricSimulation {
     }
 
     /// Add edge if neither endpoint is inside the logo interior.
-    private func addTerrainEdge(_ a: GridNode, _ b: GridNode, excluded: Set<GridNode>) -> Bool {
+    private func addTerrainEdge(_ a: GridNode, _ b: GridNode, excluded: Set<GridNode>,
+                                height: Int = 0) -> Bool {
         if excluded.contains(a) || excluded.contains(b) { return false }
-        return activeEdges.insert(GridEdge(a, b)).inserted
+        let edge = GridEdge(a, b)
+        let inserted = activeEdges.insert(edge).inserted
+        // Keep the height the generator already knows. Terrain mode reveals the
+        // relief with it; before, it was computed and discarded.
+        if inserted { edgeHeightMap[edge] = height }
+        return inserted
     }
 
     /// Render the top face (diamond) of a block, skipping edges shared with
@@ -608,16 +804,17 @@ final class IsometricSimulation {
     private func renderTopFace(q: Int, hPlusZ: Int, h: Int,
                                hXm1: Int, hXp1: Int, hZm1: Int, hZp1: Int,
                                excluded: Set<GridNode>) -> Int {
+        let height = h
         let r = hPlusZ
         let a = GridNode(q: q, r: r)
         let b = GridNode(q: q + 1, r: r)
         let c = GridNode(q: q, r: r + 1)
         let d = GridNode(q: q - 1, r: r + 1)
         var n = 0
-        if hZm1 != h { if addTerrainEdge(a, b, excluded: excluded) { n += 1 } }
-        if hXp1 != h { if addTerrainEdge(b, c, excluded: excluded) { n += 1 } }
-        if hZp1 != h { if addTerrainEdge(c, d, excluded: excluded) { n += 1 } }
-        if hXm1 != h { if addTerrainEdge(d, a, excluded: excluded) { n += 1 } }
+        if hZm1 != h { if addTerrainEdge(a, b, excluded: excluded, height: height) { n += 1 } }
+        if hXp1 != h { if addTerrainEdge(b, c, excluded: excluded, height: height) { n += 1 } }
+        if hZp1 != h { if addTerrainEdge(c, d, excluded: excluded, height: height) { n += 1 } }
+        if hXm1 != h { if addTerrainEdge(d, a, excluded: excluded, height: height) { n += 1 } }
         return n
     }
 
@@ -664,7 +861,8 @@ final class IsometricSimulation {
                     let cq = q + 1  // corner B between this and x+1 neighbor
                     for y in lo..<hi {
                         if addTerrainEdge(GridNode(q: cq, r: y + z),
-                                          GridNode(q: cq, r: y + z + 1), excluded: excluded) { edgeCount += 1 }
+                                          GridNode(q: cq, r: y + z + 1),
+                                          excluded: excluded, height: y + 1) { edgeCount += 1 }
                     }
                 }
                 if hZp1 != -1 && hZp1 != h {
@@ -672,7 +870,8 @@ final class IsometricSimulation {
                     let cq = q - 1  // corner D between this and z+1 neighbor
                     for y in lo..<hi {
                         if addTerrainEdge(GridNode(q: cq, r: y + z + 1),
-                                          GridNode(q: cq, r: y + z + 2), excluded: excluded) { edgeCount += 1 }
+                                          GridNode(q: cq, r: y + z + 2),
+                                          excluded: excluded, height: y + 1) { edgeCount += 1 }
                     }
                 }
             }
@@ -917,7 +1116,15 @@ final class IsometricSimulation {
         switch movementType {
         case .walkers, .random:
             spawnWalkers()
-        case .ripple:
+        case .terrain:
+            terrainLevel = 0
+        case .noise, .flow:
+            fieldTime = CGFloat.random(in: 0...50, using: &rng)
+            flowAngle = CGFloat.random(in: 0...(2 * .pi), using: &rng)
+        case .waveField:
+            for i in 0..<nodeU.count { nodeU[i] = 0; nodeUPrev[i] = 0 }
+            waveFieldImpulseTimer = 0
+        case .ripple, .rain:
             ripples.removeAll()
             rippleSpawnTimer = 0
             spawnRipple()
@@ -935,6 +1142,7 @@ final class IsometricSimulation {
             }
             waveMaxDist = maxProj + waveBandWidth
             wavePosition = -waveMaxDist
+            rebuildWaveBuckets()
         }
 
         log("setup done, edges: \(activeEdges.count), walkers: \(walkers.count)")
@@ -968,9 +1176,21 @@ final class IsometricSimulation {
         case .wave:
             tickWave(dt: CGFloat(dt))
             fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.30, removeThreshold: 0.03)
-        case .ripple:
+        case .ripple, .rain:
             tickRipple(dt: CGFloat(dt))
             fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.30, removeThreshold: 0.03)
+        case .terrain:
+            tickTerrain(dt: CGFloat(dt))
+            fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.12, removeThreshold: 0.03)
+        case .noise:
+            tickNoise(dt: CGFloat(dt))
+            fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.02, removeThreshold: 0.05)
+        case .flow:
+            tickFlow(dt: CGFloat(dt))
+            fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.004, removeThreshold: 0.06)
+        case .waveField:
+            tickWaveField(dt: CGFloat(dt))
+            fadeEdges(dt: CGFloat(dt), now: currentTime, decayPerSecond: 0.05, removeThreshold: 0.02)
         }
         // FPS counter
         fpsFrameCount += 1
@@ -1046,94 +1266,295 @@ final class IsometricSimulation {
             }
             waveMaxDist = maxProj + waveBandWidth
             wavePosition = -waveMaxDist
+            rebuildWaveBuckets()
         }
 
-        // Light up edges whose midpoint projects near the wave front
-        let cx = midX, cy = midY
+        // Light up edges whose midpoint projects near the wave front. Only the
+        // buckets the band actually covers are visited; the test inside is
+        // unchanged, so the result is identical to scanning everything.
         let halfBand = waveBandWidth / 2.0
-        let dx = waveDirection.x, dy = waveDirection.y
-
-        // Index order here is the same canonical order edgeMidpoints was built
-        // in, so this is the identical sequence of comparisons -- just without
-        // hashing a 32-byte key per edge per frame.
         let pos = wavePosition
-        for i in 0..<edgeMidX.count {
-            let proj = (edgeMidX[i] - cx) * dx + (edgeMidY[i] - cy) * dy
-            let dist = abs(proj - pos)
-
-            if dist < halfBand {
-                let intensity = 1.0 - dist / halfBand
-                if intensity > edgeLit[i] {
-                    edgeLit[i] = intensity
-                    markLit(i)
+        guard !waveProj.isEmpty else { return }
+        let slice = waveBuckets.range(lo: pos - halfBand, hi: pos + halfBand)
+        for b in slice {
+            let lo = Int(waveBuckets.start[b]), hi = Int(waveBuckets.start[b + 1])
+            for k in lo..<hi {
+                let i = Int(waveBuckets.edges[k])
+                let dist = abs(waveProj[i] - pos)
+                if dist < halfBand {
+                    let intensity = 1.0 - dist / halfBand
+                    if intensity > edgeLit[i] {
+                        edgeLit[i] = intensity
+                        markLit(i)
+                    }
                 }
             }
         }
     }
 
+    /// The wave sweeps along one axis, so projecting every edge onto that axis
+    /// once lets each frame touch only the slice near the front instead of all
+    /// 24k-67k edges. The direction changes about every 40 seconds, so this is
+    /// amortised to nothing.
+    private func rebuildWaveBuckets() {
+        let cx = midX, cy = midY
+        let dx = waveDirection.x, dy = waveDirection.y
+        waveProj = (0..<edgeMidX.count).map { i in
+            (edgeMidX[i] - cx) * dx + (edgeMidY[i] - cy) * dy
+        }
+        waveBuckets = BucketIndex.build(keys: waveProj, width: waveBandWidth / 2)
+    }
+
+    private var isRain: Bool { movementType == .rain }
+
     private func spawnRipple() {
-        // Random point in the middle 60% of the screen
-        let cx = size.width * CGFloat.random(in: 0.20...0.80, using: &rng)
-        let cy = size.height * CGFloat.random(in: 0.20...0.80, using: &rng)
+        // Ripple picks the middle of the screen; rain falls anywhere.
+        let lo: CGFloat = isRain ? 0.05 : 0.20
+        let hi: CGFloat = isRain ? 0.95 : 0.80
+        let cx = size.width * CGFloat.random(in: lo...hi, using: &rng)
+        let cy = size.height * CGFloat.random(in: lo...hi, using: &rng)
         let center = CGPoint(x: cx, y: cy)
 
         let corners = [CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: 0),
                        CGPoint(x: size.width, y: size.height), CGPoint(x: 0, y: size.height)]
-        let maxR = corners.map { hypot($0.x - cx, $0.y - cy) }.max()! + rippleBandWidth
+        // A raindrop is a small ring that dies quickly; a ripple crosses the screen.
+        let maxR = isRain
+            ? CGFloat.random(in: 90...220, using: &rng)
+            : corners.map { hypot($0.x - cx, $0.y - cy) }.max()! + rippleBandWidth
 
-        ripples.append(Ripple(center: center, radius: 0, maxRadius: maxR))
+        // Key on exactly the distance the per-frame test derives, so the
+        // buckets only narrow the candidate set and never change a result.
+        let keys = (0..<edgeMidX.count).map { i -> CGFloat in
+            let dx = edgeMidX[i] - cx, dy = edgeMidY[i] - cy
+            return (dx * dx + dy * dy).squareRoot()
+        }
+        var ripple = Ripple(center: center, radius: 0, maxRadius: maxR)
+        ripple.buckets = BucketIndex.build(keys: keys, width: rippleBandWidth / 2)
+        ripples.append(ripple)
     }
 
     private func tickRipple(dt: CGFloat) {
-        // Spawn new ripples periodically (max 3 concurrent)
-        // Always reset timer at the interval boundary — prevents burst when ripples free up
+        // Rain drops far more often, and each one is smaller and faster.
+        let interval = isRain ? 0.28 : rippleSpawnInterval
+        let speed = isRain ? rippleSpeed * 2.2 : rippleSpeed
         rippleSpawnTimer += dt
-        if rippleSpawnTimer >= rippleSpawnInterval {
+        if rippleSpawnTimer >= interval {
             rippleSpawnTimer = 0
             spawnRipple()
         }
 
         // Advance all ripples and remove completed ones
         for i in 0..<ripples.count {
-            ripples[i].radius += rippleSpeed * dt
+            ripples[i].radius += speed * dt
         }
         ripples.removeAll { $0.radius > $0.maxRadius }
 
         guard !ripples.isEmpty else { return }
 
-        // Light up edges for all active ripples using pre-cached midpoints
+        // Light up edges near each ring. Applying rings one at a time gives the
+        // same value as taking their maximum first, because brightness here
+        // only ever increases.
         let halfBand = rippleBandWidth / 2.0
 
-        // Pre-compute per-ripple constants so they aren't recalculated inside the edge loop
-        struct RippleRing {
-            let cx: CGFloat, cy: CGFloat, radius: CGFloat, rMinSq: CGFloat, rMaxSq: CGFloat
-        }
-        let rings: [RippleRing] = ripples.map { rip in
+        // Rings SUPERPOSE. Real waves pass through one another and their
+        // amplitudes add, so where two fronts cross the crossing is brighter
+        // than either. Contributions are summed into a scratch buffer for this
+        // frame only, then folded into the persistent brightness -- summing
+        // straight into edgeLit would let a single slow ring saturate itself.
+        for i in rippleTouched { rippleAccum[Int(i)] = 0 }
+        rippleTouched.removeAll(keepingCapacity: true)
+
+        for rip in ripples {
+            let cx = rip.center.x, cy = rip.center.y
             let rMin = max(0, rip.radius - halfBand)
             let rMax = rip.radius + halfBand
-            return RippleRing(cx: rip.center.x, cy: rip.center.y, radius: rip.radius,
-                              rMinSq: rMin * rMin, rMaxSq: rMax * rMax)
+            let rMinSq = rMin * rMin, rMaxSq = rMax * rMax
+            let slice = rip.buckets.range(lo: rMin, hi: rMax)
+            for b in slice {
+                let lo = Int(rip.buckets.start[b]), hi = Int(rip.buckets.start[b + 1])
+                for k in lo..<hi {
+                    let i = Int(rip.buckets.edges[k])
+                    let dx = edgeMidX[i] - cx
+                    let dy = edgeMidY[i] - cy
+                    let distSq = dx * dx + dy * dy
+                    if distSq < rMinSq || distSq > rMaxSq { continue }
+                    let dist = sqrt(distSq)
+                    let ringDist = (dist - rip.radius) / halfBand      // -1...1 across the band
+                    // A real ripple is a crest with troughs either side, not a
+                    // blob of brightness. Carrying the sign is what lets two
+                    // fronts cancel as well as reinforce.
+                    let envelope = 1.0 - abs(ringDist)
+                    let signed = cos(ringDist * .pi) * envelope
+                    if rippleAccum[i] == 0 { rippleTouched.append(Int32(i)) }
+                    rippleAccum[i] += signed
+                }
+            }
         }
 
-        for i in 0..<edgeMidX.count {
-            let mx = edgeMidX[i], my = edgeMidY[i]
-            var maxIntensity: CGFloat = 0
-            for ring in rings {
-                let dx = mx - ring.cx
-                let dy = my - ring.cy
-                // Use squared distance for quick reject before expensive sqrt
-                let distSq = dx * dx + dy * dy
-                if distSq < ring.rMinSq || distSq > ring.rMaxSq { continue }
-                let dist = sqrt(distSq)
-                let ringDist = abs(dist - ring.radius)
-                let intensity = 1.0 - ringDist / halfBand
-                if intensity > maxIntensity { maxIntensity = intensity }
-            }
-
-            if maxIntensity > 0, maxIntensity > edgeLit[i] {
-                edgeLit[i] = maxIntensity
+        // A single crest is deliberately kept well below full brightness, so
+        // that two crests meeting have somewhere to go. Without that headroom
+        // the sum just clipped and interference was invisible.
+        let singleCrestPeak: CGFloat = 0.58
+        for idx in rippleTouched {
+            let i = Int(idx)
+            let combined = min(abs(rippleAccum[i]) * singleCrestPeak, 1.0)
+            if combined > edgeLit[i] {
+                edgeLit[i] = combined
                 markLit(i)
             }
+        }
+    }
+
+    // MARK: - Terrain
+
+    /// Reveal the isometric relief the generator already built, by sweeping a
+    /// band of heights through it. Each edge knows which block height it came
+    /// from; edges near the current level glow.
+    private func tickTerrain(dt: CGFloat) {
+        guard !terrainKey.isEmpty else { return }
+        let lo = terrainKeyRange.lowerBound, hi = terrainKeyRange.upperBound
+        let band: CGFloat = 0.7
+        terrainLevel += dt * 1.1
+        if terrainLevel > hi + band { terrainLevel = lo - band }
+
+        // Only the buckets the band crosses, so this costs the width of the
+        // sweep rather than the whole grid.
+        for b in terrainBuckets.range(lo: terrainLevel - band, hi: terrainLevel + band) {
+            let s0 = Int(terrainBuckets.start[b]), s1 = Int(terrainBuckets.start[b + 1])
+            for k in s0..<s1 {
+                let i = Int(terrainBuckets.edges[k])
+                let d = abs(terrainKey[i] - terrainLevel)
+                if d < band {
+                    let intensity = 1.0 - d / band
+                    if intensity > edgeLit[i] { edgeLit[i] = intensity; markLit(i) }
+                }
+            }
+        }
+    }
+
+    // MARK: - Field modes
+
+    /// Smooth value noise on the coarse lattice. One hash per cell per frame,
+    /// then a bilinear read per edge, instead of noise per edge.
+    private func updateFieldLattice(scaleX: CGFloat, scaleY: CGFloat, t: CGFloat) {
+        @inline(__always) func hash(_ x: Int, _ y: Int, _ z: Int) -> CGFloat {
+            var h = UInt64(bitPattern: Int64(x &* 374761393 &+ y &* 668265263 &+ z &* 2147483647))
+            h = (h ^ (h >> 13)) &* 1274126177
+            h = h ^ (h >> 16)
+            return CGFloat(h & 0xFFFF) / 65535.0
+        }
+        @inline(__always) func smooth(_ a: CGFloat) -> CGFloat { a * a * (3 - 2 * a) }
+        @inline(__always) func noise(_ x: CGFloat, _ y: CGFloat, _ z: CGFloat) -> CGFloat {
+            let xi = Int(floor(x)), yi = Int(floor(y)), zi = Int(floor(z))
+            let fx = smooth(x - floor(x)), fy = smooth(y - floor(y)), fz = smooth(z - floor(z))
+            func lerp(_ a: CGFloat, _ b: CGFloat, _ f: CGFloat) -> CGFloat { a + (b - a) * f }
+            let c00 = lerp(hash(xi, yi, zi),         hash(xi + 1, yi, zi),         fx)
+            let c10 = lerp(hash(xi, yi + 1, zi),     hash(xi + 1, yi + 1, zi),     fx)
+            let c01 = lerp(hash(xi, yi, zi + 1),     hash(xi + 1, yi, zi + 1),     fx)
+            let c11 = lerp(hash(xi, yi + 1, zi + 1), hash(xi + 1, yi + 1, zi + 1), fx)
+            return lerp(lerp(c00, c10, fy), lerp(c01, c11, fy), fz)
+        }
+        for gy in 0..<fieldRows {
+            for gx in 0..<fieldCols {
+                fieldValues[gy * fieldCols + gx] =
+                    noise(CGFloat(gx) * scaleX, CGFloat(gy) * scaleY, t)
+            }
+        }
+    }
+
+    @inline(__always)
+    private func sampleField(_ i: Int) -> CGFloat {
+        let base = Int(edgeCellIndex[i])
+        let w = edgeCellWeights[i]
+        return fieldValues[base] * CGFloat(w.x)
+             + fieldValues[base + 1] * CGFloat(w.y)
+             + fieldValues[base + fieldCols] * CGFloat(w.z)
+             + fieldValues[base + fieldCols + 1] * CGFloat(w.w)
+    }
+
+    /// Slow organic drift: a low-frequency noise field wandering over the grid.
+    private func tickNoise(dt: CGFloat) {
+        fieldTime += dt * 0.20
+        updateFieldLattice(scaleX: 0.16, scaleY: 0.16, t: fieldTime)
+        for i in 0..<edgeLit.count {
+            let v = sampleField(i)
+            // Only the crests light, so the grid stays mostly dark.
+            if v > 0.78 {
+                let intensity = min((v - 0.78) / 0.16, 1.0)
+                if intensity > edgeLit[i] { edgeLit[i] = intensity; markLit(i) }
+            }
+        }
+    }
+
+    /// A slowly rotating travelling grating, with the noise field breaking up
+    /// the regularity so it does not read as a scanline.
+    private func tickFlow(dt: CGFloat) {
+        flowAngle += dt * 0.06
+        fieldTime += dt * 0.10
+        updateFieldLattice(scaleX: 0.10, scaleY: 0.10, t: fieldTime)
+        let dx = cos(flowAngle), dy = sin(flowAngle)
+        let wavelength: CGFloat = 260
+        let phase = fieldTime * 6.0
+        let table = Self.sineTable
+        let invWavelength = 1.0 / wavelength
+        for i in 0..<edgeLit.count {
+            let proj = (edgeMidX[i] * dx + edgeMidY[i] * dy) * invWavelength + phase
+            let idx = Int((proj - proj.rounded(.down)) * 4096) & 4095
+            let band = table[idx]
+            // Only the crest, not the whole positive half. Keeps the grid
+            // mostly dark and keeps the lit set small enough to be cheap.
+            // A field mode covers the whole screen, so the crest has to be
+            // narrow or most of the grid ends up lit at once -- which is both
+            // expensive and much busier than this animation should look.
+            guard band > 0.86 else { continue }
+            let crest = (band - 0.86) / 0.14
+            let intensity = crest * (0.35 + 0.65 * sampleField(i))
+            if intensity > edgeLit[i] { edgeLit[i] = intensity; markLit(i) }
+        }
+    }
+
+    // MARK: - Wave field (physics)
+
+    /// A real wave equation solved on the grid graph. Each node carries an
+    /// amplitude and its previous amplitude; every frame it is pulled toward
+    /// the average of its neighbours. Interference, reflection off the edge of
+    /// the grid and standing waves all fall out of this rather than being
+    /// special-cased.
+    private func tickWaveField(dt: CGFloat) {
+        guard nodeCount > 0 else { return }
+
+        waveFieldImpulseTimer -= dt
+        if waveFieldImpulseTimer <= 0 {
+            waveFieldImpulseTimer = CGFloat.random(in: 2.2...4.5, using: &rng)
+            let n = Int.random(in: 0..<nodeCount, using: &rng)
+            // A strong, local strike so the front stays legible as it expands.
+            nodeU[n] += 22.0
+        }
+
+        let c2: CGFloat = 0.34          // below the stability limit for this stencil
+        // Enough loss that a strike dies away before the next, so the grid
+        // shows expanding fronts rather than a permanent shimmer.
+        let damping: CGFloat = 0.985
+        var next = nodeUPrev             // reuse the buffer we are about to overwrite
+        for i in 0..<nodeCount {
+            let lo = Int(nodeAdjStart[i]), hi = Int(nodeAdjStart[i + 1])
+            guard hi > lo else { next[i] = 0; continue }
+            var sum: CGFloat = 0
+            for k in lo..<hi { sum += nodeU[Int(nodeAdjList[k])] }
+            let laplacian = sum / CGFloat(hi - lo) - nodeU[i]
+            next[i] = (2 * nodeU[i] - nodeUPrev[i] + c2 * laplacian) * damping
+        }
+        nodeUPrev = nodeU
+        nodeU = next
+
+        // Brightness is the displacement magnitude across each edge.
+        for i in 0..<edgeLit.count {
+            let a = nodeU[Int(edgeNodeAIdx[i])]
+            let b = nodeU[Int(edgeNodeBIdx[i])]
+            let raw = abs(a + b) * 0.5
+            guard raw > 0.06 else { continue }
+            let amp = min((raw - 0.06) * 2.2, 1.0)
+            if amp > edgeLit[i] { edgeLit[i] = amp; markLit(i) }
         }
     }
 

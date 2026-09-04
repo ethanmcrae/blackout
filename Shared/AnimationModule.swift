@@ -80,25 +80,36 @@ enum AccentColor: String, CaseIterable {
 // MARK: - Movement Type
 
 enum MovementType: String, CaseIterable {
-    case walkers = "walkers"
-    case wave    = "wave"
-    case ripple  = "ripple"
-    case random  = "random"
+    case walkers   = "walkers"
+    case wave      = "wave"
+    case ripple    = "ripple"
+    case terrain   = "terrain"
+    case noise     = "noise"
+    case rain      = "rain"
+    case flow      = "flow"
+    case waveField = "wavefield"
+    case random    = "random"
 
     var displayName: String {
         switch self {
-        case .walkers: return "Walkers"
-        case .wave:    return "Wave"
-        case .ripple:  return "Ripple"
-        case .random:  return "Random"
+        case .walkers:   return "Walkers"
+        case .wave:      return "Wave"
+        case .ripple:    return "Ripple"
+        case .terrain:   return "Terrain"
+        case .noise:     return "Drift"
+        case .rain:      return "Rain"
+        case .flow:      return "Flow"
+        case .waveField: return "Wave Field"
+        case .random:    return "Random"
         }
     }
 
+    static var selectable: [MovementType] {
+        allCases.filter { $0 != .random }
+    }
+
     var resolved: MovementType {
-        if self == .random {
-            return [.walkers, .wave, .ripple].randomElement()!
-        }
-        return self
+        self == .random ? Self.selectable.randomElement()! : self
     }
 }
 

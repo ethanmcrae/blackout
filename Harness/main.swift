@@ -793,6 +793,21 @@ func runFallback(_ args: Args) -> Int32 {
     return 0
 }
 
+// MARK: - Single frame
+
+/// Render exactly one frame at full resolution, with the usual crop/zoom, for
+/// looking closely at something specific.
+func runFrame(_ args: Args) -> Int32 {
+    let dual = DualRenderer(args: args)
+    for i in 0...max(args.frames, 0) { dual.advance(to: i) }
+    guard let img = dual.renderMetal() ?? dual.renderCG() else { return 2 }
+    let z = cropZoom(img, crop: args.crop, scale: args.scale, zoom: args.zoom) ?? img
+    let name = "\(args.out)/frame-\(args.movement.rawValue)-\(args.frames).png"
+    writePNG(z, to: name)
+    print("wrote \(name)  (\(dual.frame.instances.count) segments)")
+    return 0
+}
+
 // MARK: - Entry
 
 let args = Args.parse()
@@ -805,6 +820,7 @@ case "profile": status = runProfile(args)
 case "window":  status = runWindow(args)
 case "hash":    status = runHash(args)
 case "fallback": status = runFallback(args)
+case "frame":   status = runFrame(args)
 default:
     print("unknown command '\(args.command)'. use: compare | sheet | bench | profile | window | hash | fallback")
     status = 64

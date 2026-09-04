@@ -49,6 +49,15 @@ for movement in walkers wave ripple; do
 done
 
 echo
+echo "=== new movement modes ==="
+for movement in terrain noise rain flow wavefield; do
+  step "$movement  renderers agree"
+  if "$HARNESS" compare --frames 200 --movement "$movement" --seed 5 \
+       --out "$OUT/mode-$movement" >"$OUT/mode-$movement.log" 2>&1; then ok
+  else bad "see $OUT/mode-$movement.log"; fi
+done
+
+echo
 echo "=== accent colours ==="
 for color in blue pink green white; do
   step "accent $color"
@@ -64,11 +73,11 @@ if [ $? -ne 0 ]; then ok; else bad "an empty render was accepted"; fi
 
 echo
 echo "=== simulation output (renderer comparison is blind to this) ==="
-for movement in walkers wave ripple; do
+for movement in walkers wave ripple terrain noise rain flow wavefield; do
   step "$movement matches its golden digest"
   golden="$DIR/goldens/$movement-seed7.digest"
   if [ ! -f "$golden" ]; then bad "no golden recorded"; continue; fi
-  actual=$("$HARNESS" hash --seed 7 --frames 300 --movement "$movement" 2>/dev/null | grep DIGEST)
+  actual=$("$HARNESS" hash --seed 7 --frames 900 --movement "$movement" 2>/dev/null | grep DIGEST)
   if [ "$actual" = "$(cat "$golden")" ]; then ok
   else bad "got $actual, expected $(cat "$golden")"; fi
 done
