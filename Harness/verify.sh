@@ -15,11 +15,10 @@ bad()  { echo "FAIL  ($1)"; fail=$((fail+1)); }
 
 echo "=== build ==="
 step "app (optimised)"
+# Glob rather than list: an explicit list silently goes stale the moment a
+# new source file is added, and the failure looks like a code error.
 if swiftc -O -o "$OUT/Blackout" \
-    "$ROOT"/Blackout/main.swift "$ROOT"/Blackout/AppDelegate.swift \
-    "$ROOT"/Blackout/OverlayManager.swift "$ROOT"/Blackout/HotkeyManager.swift \
-    "$ROOT"/Blackout/SetupWindowController.swift "$ROOT"/Blackout/SleepPrevention.swift \
-    "$ROOT"/Blackout/PasswordMatcher.swift \
+    "$ROOT"/Blackout/*.swift \
     "$ROOT"/Shared/*.swift \
     -framework Cocoa -framework Carbon -framework ServiceManagement \
     -framework Metal -framework QuartzCore >"$OUT/app.log" 2>&1; then ok; else bad "see $OUT/app.log"; fi
@@ -90,6 +89,26 @@ if [ "$d1" = "$d2" ]; then ok; else bad "non-deterministic: $d1 vs $d2"; fi
 step "different seeds produce different runs"
 d3=$("$HARNESS" hash --seed 22 --frames 120 --movement walkers 2>/dev/null | grep DIGEST)
 if [ "$d1" != "$d3" ]; then ok; else bad "seed is being ignored"; fi
+
+echo
+echo "=== password feedback policy ==="
+step "compile the policy tests"
+if swiftc -O -o "$OUT/pwtests" "$DIR/tests/password-feedback/main.swift" \
+     "$ROOT/Blackout/PasswordFeedbackPolicy.swift" "$ROOT/Blackout/PasswordMatcher.swift" \
+     >"$OUT/pwtests-build.log" 2>&1; then ok; else bad "see $OUT/pwtests-build.log"; fi
+step "first keystroke never reveals correctness"
+if "$OUT/pwtests" >"$OUT/pwtests.log" 2>&1; then ok; else bad "see $OUT/pwtests.log"; fi
+
+echo
+echo "=== password marks wiring ==="
+step "compile the marks wiring tests"
+if swiftc -O -o "$OUT/markstests" "$DIR/tests/marks-wiring/main.swift" \
+     "$ROOT/Blackout/OverlayManager.swift" "$ROOT/Blackout/PasswordMarksView.swift" \
+     "$ROOT/Blackout/SleepPrevention.swift" "$ROOT"/Shared/*.swift \
+     -framework Cocoa -framework Carbon -framework Metal -framework QuartzCore \
+     >"$OUT/markstests-build.log" 2>&1; then ok; else bad "see $OUT/markstests-build.log"; fi
+step "length reaches the marks; speed follows typing"
+if "$OUT/markstests" >"$OUT/markstests.log" 2>&1; then ok; else bad "see $OUT/markstests.log"; fi
 
 echo
 echo "=== the Core Graphics fallback still works ==="

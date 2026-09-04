@@ -14,7 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Password mode state
     private var unlockMode: String = "hotkey" // "hotkey" or "password"
-    private var passwordMatcher: PasswordMatcher?
+    /// Setting the entry publishes the password's length to the overlays, so
+    /// the marks lay out a fixed row. Doing it here rather than at each call
+    /// site is what stops it being forgotten: it previously reached only one of
+    /// the three paths that show the overlay, so the row silently fell back to
+    /// re-centring itself on every keystroke.
+    private var passwordMatcher: PasswordEntry? {
+        didSet { overlayManager.setPasswordLength(passwordMatcher?.length ?? 0) }
+    }
 
     // Triple-escape setting
     private static let unlockModeKey = "unlockMode"
@@ -54,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unlockMode = saved
         if unlockMode == "password" {
             if let pw = KeychainHelper.load() {
-                passwordMatcher = PasswordMatcher(password: pw)
+                passwordMatcher = PasswordEntry(password: pw)
                 // Hotkey stays enabled — used for activation only in password mode
             } else {
                 // Password lost — persist the fallback and force re-setup
@@ -210,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.unlockMode == "password" {
                 // Password mode: hotkey only activates, never deactivates
                 if !self.overlayManager.isActive {
+                    self.resetAttemptDisplay()
                     self.overlayManager.show()
                     self.updateActivateMenuTitle()
                 }
@@ -257,24 +265,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Password Key Handling
 
+    private func resetAttemptDisplay() {
+        passwordMatcher?.reset()
+        overlayManager.setPasswordLength(passwordMatcher?.length ?? 0)
+    }
+
     private func handlePasswordKey(_ chars: String) {
         guard overlayManager.isActive, unlockMode == "password", let matcher = passwordMatcher else { return }
 
         for char in chars {
-            let result = matcher.processKey(char)
-            switch result {
-            case .correct(let position):
-                if position >= 1 {
-                    overlayManager.showProgressOnPrimary(count: position + 1)
-                }
-            case .incorrect(let previousProgress):
-                if previousProgress >= 2 {
-                    overlayManager.showErrorOnPrimary(count: previousProgress)
-                } else {
-                    overlayManager.clearFeedbackOnPrimary()
-                }
-            case .complete:
+            switch matcher.key(char) {
+            case .marks(let n):
+                overlayManager.showProgressOnPrimary(count: n)
+            case .error(let n):
+                overlayManager.showErrorOnPrimary(count: n)
+            case .clear:
                 overlayManager.clearFeedbackOnPrimary()
+            case .unlock:
+                overlayManager.showSuccessOnPrimary()
                 if let setup = setupWindowController, setup.phase == .practice {
                     overlayManager.hide()
                     setup.practiceSucceeded()
@@ -287,13 +295,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+
+
     private func handleBackspace() {
         guard overlayManager.isActive, unlockMode == "password", let matcher = passwordMatcher else { return }
-        let newIndex = matcher.processBackspace()
-        if newIndex > 0 {
-            overlayManager.showProgressOnPrimary(count: newIndex)
-        } else {
-            overlayManager.clearFeedbackOnPrimary()
+        switch matcher.backspace() {
+        case .marks(let n): overlayManager.showProgressOnPrimary(count: n)
+        default:            overlayManager.clearFeedbackOnPrimary()
         }
     }
 
@@ -438,7 +446,7 @@ extension AppDelegate: SetupWindowControllerDelegate {
 
     func setupDidRequestPractice(password: String, keyCode: UInt32, modifiers: UInt32) {
         setUnlockMode("password")
-        passwordMatcher = PasswordMatcher(password: password)
+        passwordMatcher = PasswordEntry(password: password)
         hotkeyManager.configure(keyCode: keyCode, modifiers: modifiers)
         updateActivateMenuTitle()
         overlayManager.show()
@@ -456,7 +464,7 @@ extension AppDelegate: SetupWindowControllerDelegate {
     func setupDidComplete(password: String, keyCode: UInt32, modifiers: UInt32) {
         setUnlockMode("password")
         _ = KeychainHelper.save(password: password)
-        passwordMatcher = PasswordMatcher(password: password)
+        passwordMatcher = PasswordEntry(password: password)
         hotkeyManager.configure(keyCode: keyCode, modifiers: modifiers)
         updateActivateMenuTitle()
         setupWindowController = nil

@@ -14,17 +14,12 @@ mkdir -p Blackout.app/Contents/{MacOS,Resources}
 cp Blackout/Info.plist Blackout.app/Contents/Info.plist
 cp Blackout/AppIcon.icns Blackout.app/Contents/Resources/
 swiftc -O -o Blackout.app/Contents/MacOS/Blackout \
-  Blackout/main.swift Blackout/AppDelegate.swift Blackout/OverlayManager.swift \
-  Blackout/HotkeyManager.swift Blackout/SetupWindowController.swift \
-  Blackout/SleepPrevention.swift Blackout/PasswordMatcher.swift \
-  Shared/AnimationModule.swift Shared/IsometricModule.swift \
-  Shared/IsometricSimulation.swift Shared/IsometricRenderer.swift \
-  Shared/IsometricMetalRenderer.swift \
+  Blackout/*.swift Shared/*.swift \
   -framework Cocoa -framework Carbon -framework ServiceManagement \
   -framework Metal -framework QuartzCore
 ```
 
-When adding new `.swift` files, add them to the `swiftc` command above AND update the README build section.
+The build globs `Blackout/*.swift` and `Shared/*.swift`, so a new source file needs no build change. Run `bash Harness/verify.sh` after any change under `Shared/` or `Blackout/`.
 
 ## Deploy
 

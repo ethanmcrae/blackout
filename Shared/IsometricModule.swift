@@ -52,6 +52,14 @@ final class IsometricModule: NSView, AnimationModule {
     /// Frame rate this module wants, for hosts that drive frames themselves.
     var preferredFPS: Double { sim.preferredFPS }
 
+    /// The accent this module is drawing in, so overlaid UI can match it.
+    var accentColor: NSColor {
+        NSColor(red: config.accentR, green: config.accentG, blue: config.accentB, alpha: 1.0)
+    }
+
+    /// Whether this module is drawing on a light ground.
+    var isLightMode: Bool { config.lightMode }
+
     private var metalLayer: CAMetalLayer? { layer as? CAMetalLayer }
 
     private var renderParams: IsometricRenderParams {

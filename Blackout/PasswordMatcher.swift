@@ -34,6 +34,8 @@ final class PasswordMatcher {
     private var currentIndex: Int = 0
 
     var progress: Int { currentIndex }
+    /// Number of characters in the password.
+    var length: Int { characters.count }
 
     init(password: String) {
         self.characters = Array(password)

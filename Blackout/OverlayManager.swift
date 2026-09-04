@@ -12,17 +12,25 @@ final class OverlayWindow: NSWindow {
     /// Set to true during hide/fade-out to prevent resignKey from re-asserting focus.
     var suppressFocusReassert = false
 
-    private var feedbackLabel: NSTextField = {
-        let label = NSTextField(labelWithString: "")
-        label.alignment = .center
-        label.font = .systemFont(ofSize: 40, weight: .medium)
-        label.textColor = NSColor(white: 0.15, alpha: 1.0)
-        label.isHidden = true
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
+    private var feedbackLabel: PasswordMarksView = {
+        let view = PasswordMarksView(frame: NSRect(x: 0, y: 0, width: 320, height: 60))
+        view.isHidden = true
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
     }()
 
     private var feedbackFadeWork: DispatchWorkItem?
+
+    /// Password length, so the marks lay out a fixed row.
+    var passwordSlots: Int = 0 {
+        didSet { feedbackLabel.slotCount = passwordSlots }
+    }
+
+    func resetMarksRhythm() { feedbackLabel.resetRhythm() }
+
+    /// Read-only view of what actually reached the marks, so the wiring can be
+    /// asserted rather than assumed. It silently failed to arrive once.
+    var marksSlotCount: Int { feedbackLabel.slotCount }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -52,17 +60,22 @@ final class OverlayWindow: NSWindow {
     func installFeedbackLabel() {
         guard let contentView = self.contentView, feedbackLabel.superview == nil else { return }
         contentView.addSubview(feedbackLabel)
+        feedbackLabel.slotCount = passwordSlots
+        if let module = contentView as? IsometricModule {
+            feedbackLabel.lightMode = module.isLightMode
+        }
         NSLayoutConstraint.activate([
             feedbackLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             feedbackLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            feedbackLabel.widthAnchor.constraint(equalToConstant: 340),
+            feedbackLabel.heightAnchor.constraint(equalToConstant: 60),
         ])
     }
 
     func showProgress(count: Int) {
         feedbackFadeWork?.cancel()
         installFeedbackLabel()
-        feedbackLabel.stringValue = String(repeating: "*", count: count)
-        feedbackLabel.textColor = NSColor(white: 0.15, alpha: 1.0)
+        feedbackLabel.setCount(count, error: false)
         feedbackLabel.alphaValue = 1.0
         feedbackLabel.isHidden = false
 
@@ -83,10 +96,10 @@ final class OverlayWindow: NSWindow {
     func showError(count: Int) {
         feedbackFadeWork?.cancel()
         installFeedbackLabel()
-        feedbackLabel.stringValue = count > 0 ? String(repeating: "*", count: count) : ""
-        feedbackLabel.textColor = NSColor(red: 0.6, green: 0.0, blue: 0.0, alpha: 1.0)
+        feedbackLabel.setCount(count, error: true)
         feedbackLabel.alphaValue = 1.0
         feedbackLabel.isHidden = count == 0
+        if count > 0 { shakeFeedback() }
 
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
@@ -102,11 +115,47 @@ final class OverlayWindow: NSWindow {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
+    /// A short horizontal shake. "No" is far more legible as motion than as a
+    /// colour change, and it works whatever the accent colour happens to be.
+    private func shakeFeedback() {
+        // wantsLayer first: reading position off a nil layer would anchor the
+        // shake at zero and fling the marks to the window edge.
+        feedbackLabel.wantsLayer = true
+        let shake = CAKeyframeAnimation(keyPath: "position.x")
+        let x = feedbackLabel.layer?.position.x ?? feedbackLabel.frame.midX
+        shake.values = [x, x - 7, x + 6, x - 4, x + 3, x]
+        shake.keyTimes = [0, 0.15, 0.35, 0.55, 0.78, 1]
+        shake.duration = 0.30
+        shake.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        feedbackLabel.layer?.add(shake, forKey: "shake")
+    }
+
+    /// The unlock. The marks expand and dissolve while the overlay's own fade
+    /// runs, so success gets a moment without delaying it.
+    func showSuccess() {
+        feedbackFadeWork?.cancel()
+        guard !feedbackLabel.isHidden, feedbackLabel.count > 0 else { return }
+        feedbackLabel.alphaValue = 1.0
+        feedbackLabel.playSuccess()
+    }
+
     func clearFeedback() {
         feedbackFadeWork?.cancel()
-        feedbackLabel.isHidden = true
-        feedbackLabel.stringValue = ""
+        // Deleting the last mark should un-draw like any other, so hide only
+        // once that animation has had time to run.
+        if !feedbackLabel.isHidden && feedbackLabel.count > 0 {
+            feedbackLabel.setCount(0, error: false)
+            let work = DispatchWorkItem { [weak self] in
+                self?.feedbackLabel.isHidden = true
+            }
+            feedbackFadeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
+        } else {
+            feedbackLabel.isHidden = true
+            feedbackLabel.setCount(0, error: false)
+        }
     }
+
 }
 
 private func debugLog(_ msg: String) {
@@ -196,6 +245,7 @@ final class OverlayManager {
     /// Called when overlay state changes (for menu bar icon updates, etc.)
     var onStateChanged: (() -> Void)?
 
+    private var storedPasswordSlots = 0
     private var currentOpacity: CGFloat = 1.0
     private var opacityAdjustmentTimer: Timer?
 
@@ -409,6 +459,20 @@ final class OverlayManager {
         overlayWindows.first?.showError(count: count)
     }
 
+    /// Tell the overlays how long the password is, so the marks can lay out a
+    /// row that does not move as it fills.
+    func setPasswordLength(_ length: Int) {
+        storedPasswordSlots = length
+        for window in overlayWindows {
+            window.passwordSlots = length
+            window.resetMarksRhythm()
+        }
+    }
+
+    func showSuccessOnPrimary() {
+        overlayWindows.first?.showSuccess()
+    }
+
     func clearFeedbackOnPrimary() {
         overlayWindows.first?.clearFeedback()
     }
@@ -463,6 +527,7 @@ final class OverlayManager {
         bgView.autoresizingMask = [.width, .height]
         window.contentView = bgView
 
+        window.passwordSlots = storedPasswordSlots
         window.onEscapePressed = { [weak self] in
             self?.onOverlayEscapePressed?()
         }
@@ -496,6 +561,8 @@ final class OverlayManager {
         window.level = .floating
         window.center()
         window.hasShadow = true
+
+        window.passwordSlots = storedPasswordSlots
 
         // Add generative background to preview too
         let bgView = IsometricModule(frame: frame, config: currentConfig)
