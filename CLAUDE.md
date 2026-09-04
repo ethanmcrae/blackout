@@ -39,63 +39,68 @@ Always: build → commit → push → copy to /Applications (replacing the exist
 
 ## Verifying Animation Changes
 
-IMPORTANT: never change rendering or simulation code without running `Harness/`.
-The animation cannot be checked by reading a diff, and a build that compiles can
-still be visually broken.
+IMPORTANT: run `bash Harness/verify.sh` after ANY change under `Shared/`, and
+before pushing. It builds all three targets and runs 29 checks. An animation
+cannot be checked by reading a diff, and a build that compiles can still be
+visually dead.
 
 ```bash
-bash Harness/build.sh
-
-# CPU vs GPU pixel diff -- both renderers get the IDENTICAL frame data, so any
-# disagreement is a rendering bug and nothing else. Exits non-zero on mismatch.
-./Harness/.build/isoharness compare --frames 120 --movement walkers
-./Harness/.build/isoharness compare --frames 120 --movement wave
-./Harness/.build/isoharness compare --frames 120 --movement ripple
-
-# Contact sheet across time -- open the PNG and confirm the animation evolves.
-./Harness/.build/isoharness sheet --frames 600 --every 60 --movement walkers
-
-# Real window, real CAMetalLayer, screenshotted. The compare path does NOT
-# cover the on-screen path (backing layer, drawableSize, contentsScale).
-./Harness/.build/isoharness window --movement ripple --seconds 8
-
-# CPU cost per frame, both renderers.
-./Harness/.build/isoharness bench --frames 150
+bash Harness/verify.sh          # the whole suite, exits non-zero on failure
 ```
 
-`bench` draws into one long-lived bitmap context, matching what the view does
-when it draws into the window's backing store. Allocating a fresh context per
-frame charges the background fill for faulting in ~30MB of cold pages and
-roughly triples the Core Graphics figure -- an early version of this tool did
-that and overstated the speedup by about 4x. Measure a renderer against a warm
-destination, or the number is about the allocator, not the renderer.
+What it covers, and why each part exists:
 
-Steady-state cost while the overlay is up, as a share of one CPU core:
+| Check | Catches |
+|---|---|
+| CPU vs GPU pixel diff, per movement x scale x light/dark x accent | any rendering bug |
+| Simulation golden digests | a simulation regression, which the pixel diff is blind to |
+| Same seed reproduces across processes | non-determinism creeping back in |
+| An all-black render must FAIL | the harness itself going blind |
+| Core Graphics fallback renders | the path Macs without a GPU use |
+| Screen saver bundle loads and ticks | a `.saver` that will not open |
 
-| Mode | Before | After | GPU added |
-| --- | --- | --- | --- |
-| Walkers | 3.5-6.5% | 1.1-1.3% | 1.1-2.5% |
-| Ripple | 3.9-6.0% | 1.1-1.5% | 0.7-1.7% |
-| Wave | 3.3-6.2% | 1.9-5.2% | 0.7-1.7% |
+The single most important thing to understand: **`compare` feeds the identical
+frame data to both renderers**, so it proves they agree, and proves nothing
+about whether the simulation is right. A broken simulation makes both renderers
+agree on wrong output. That is what the golden digests are for.
 
-Wave gains least. Its Core Graphics path already batched strokes into five
-paths, and `IsometricSimulation.fill` costs 0.4-0.8 ms per frame there because
-it does two dictionary lookups per lit edge. Moving the simulation to
-index-based storage is the obvious next win if that mode matters.
+Individual commands:
 
-Useful flags: `--size WxH`, `--scale`, `--color`, `--light`, `--crop x,y,w,h`,
-`--zoom N` (nearest-neighbour magnification, for looking at individual pixels),
+```bash
+./Harness/.build/isoharness compare  --frames 120 --movement walkers
+./Harness/.build/isoharness hash     --seed 7 --frames 300 --movement wave
+./Harness/.build/isoharness sheet    --frames 600 --every 60 --movement walkers
+./Harness/.build/isoharness window   --movement ripple --seconds 8
+./Harness/.build/isoharness fallback --frames 240
+./Harness/.build/isoharness bench    --frames 150
+./Harness/.build/isoharness profile
+```
+
+Flags: `--size WxH`, `--scale`, `--color`, `--light`, `--seed N`,
+`--crop x,y,w,h`, `--zoom N` (nearest-neighbour, for looking at real pixels),
 `--out DIR`.
 
-`compare` reports `VERDICT: MATCH` when the only differences are anti-aliasing.
-Healthy numbers are max channel delta under ~15/255, zero pixels disagreeing by
-more than 32/255, and an ink ratio within 0.999-1.001. A structural bug (flipped
-axis, wrong scale, dropped segments) shows up immediately as pixels over 128.
+`window` is the only check of the live on-screen path (backing layer,
+drawableSize, contentsScale, drawable presentation) and needs a real display,
+so verify.sh prints it as a manual step rather than running it.
+
+**When a golden digest changes**, that is the tool working. Confirm the change
+was intended, LOOK at `isoharness sheet` output, then re-record with
+`bash Harness/record-goldens.sh`. Never re-record to make a red suite go green.
+
+**Steady-state cost** while the overlay is up, share of one CPU core, versus the
+original Core Graphics renderer:
+
+| Mode | Before | After | GPU added |
+|---|---|---|---|
+| walkers 16" / 34" | 5.6% / 8.3% | 1.58% / 1.60% | 0.96% / 2.32% |
+| wave 16" / 34" | 6.3% / 11.5% | 1.46% / 1.95% | 0.78% / 1.92% |
+| ripple 16" / 34" | 5.6% / 9.0% | 1.32% / 1.76% | 0.78% / 1.87% |
 
 Do NOT verify by activating the real overlay. It sets `NSApp.presentationOptions`
 to disable Cmd+Tab, Force Quit and session termination, and the user's install
-uses password unlock with triple-Escape dismiss turned off -- activating it
-unattended can lock the machine.
+uses password unlock with triple-Escape dismiss off -- activating it unattended
+can lock the machine.
 
 ## Architecture
 
@@ -109,7 +114,9 @@ All source lives in `Blackout/` (flat, no nested modules). `Blackout.app/` is co
 | `HotkeyManager.swift` | Global hotkey via Carbon API, triple-Escape detection, key display strings |
 | `SetupWindowController.swift` | Guided wizard (mode select → capture → confirm → practice → done) |
 | `PasswordMatcher.swift` | Character-by-character password validation + KeychainHelper (UserDefaults storage) |
-| `Shared/IsometricSimulation.swift` | Pure simulation: grid generation, walkers/wave/ripple, fading. No AppKit, no drawing. Emits an `IsometricFrame` of lit segments |
+| `Shared/IsometricSimulation.swift` | Pure simulation: grid generation, walkers/wave/ripple, fading. No AppKit, no drawing. Emits an `IsometricFrame` of lit segments. State is index-parallel arrays keyed by position in the canonically sorted `activeEdgeArray` |
+| `Harness/verify.sh` | The 29-check suite. Run it after any `Shared/` change |
+| `Harness/goldens/` | Simulation output digests. See "Verifying Animation Changes" |
 | `Shared/IsometricRenderer.swift` | `IsometricCGRenderer` — Core Graphics reference renderer, and the shared `IsometricRenderParams` |
 | `Shared/IsometricMetalRenderer.swift` | GPU renderer. One instanced draw call per frame; shader compiled at runtime from a Swift string |
 | `Shared/IsometricModule.swift` | `NSView` host: owns the simulation, drives the timer, renders through Metal (or Core Graphics if Metal is unavailable) |
@@ -129,6 +136,21 @@ All source lives in `Blackout/` (flat, no nested modules). `Blackout.app/` is co
 - **KeychainHelper** is misnamed — it uses UserDefaults, not the keychain
 
 ## Rendering Notes
+
+- **Randomness is seeded and container order is canonical.** Swift seeds its
+  hasher per process, and that order used to leak into the output through edge
+  indices, adjacency order and emit order. Everything feeding the animation is
+  sorted. `AnimationConfig.seed` pins the generator; unseeded it still varies
+  per launch.
+- **Simulation state is index-parallel arrays**, not dictionaries keyed on
+  `GridEdge`. The old form hashed a 32-byte key about five times per lit edge
+  per frame. Anything added to the per-frame path should follow that pattern.
+- **Effects live in the frame data, not in one renderer.** The vignette and the
+  walker trail gradient are computed in the simulation so both renderers
+  produce them identically. An effect implemented only in the shader would make
+  the CPU and GPU renderers diverge and take the whole verification suite red.
+  The warm core is the exception that genuinely must exist in both, so the
+  formula is written out on each side with a comment pointing at the other.
 
 - **Simulation and rendering are separate.** `IsometricSimulation` decides what is
   lit; renderers only draw. Both renderers consume the same `IsometricFrame`,

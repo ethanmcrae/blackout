@@ -91,27 +91,21 @@ a Core Graphics renderer is kept as a reference so GPU output can be diffed
 against CPU output pixel for pixel. On a Mac without Metal the app falls back to
 the Core Graphics path automatically.
 
-While the overlay is up, the animation's CPU cost drops from roughly 4-6% of one
-core to 1.1-1.5% in Walkers and Ripple, in exchange for 0.7-2.5% of the GPU.
-Wave benefits least, around 1.1-1.8x, because its Core Graphics path was already
-batched and the saving is partly offset by the cost of building each frame's
-segment list. Measured as process CPU time over a fixed wall-clock window with
-the animation running at its real frame rate.
+While the overlay is up, the animation's CPU cost drops from roughly 5.6-11.5%
+of one core to 1.3-2.0%, in exchange for 0.8-2.3% of the GPU. The animation also
+stops entirely when the display sleeps or the window is fully occluded, which it
+did not before.
 
 ### Verifying a change to the animation
 
 ```bash
-bash Harness/build.sh
-./Harness/.build/isoharness compare --frames 120 --movement walkers
-./Harness/.build/isoharness sheet   --frames 600 --every 60 --movement walkers
-./Harness/.build/isoharness window  --movement ripple --seconds 8
-./Harness/.build/isoharness bench   --frames 150
+bash Harness/verify.sh                                    # the whole suite
+./Harness/.build/isoharness window --movement ripple --seconds 8   # live path
 ```
 
-`compare` renders every frame through both renderers and reports where they
-disagree. `sheet` writes a contact sheet so the animation over time can be
-looked at. `window` opens a real window and screenshots it. `bench` reports
-per-frame CPU cost.
+`bash Harness/verify.sh` runs everything: 29 checks covering renderer
+agreement, simulation golden digests, determinism, the Core Graphics fallback,
+and whether the screen saver bundle loads. Run it before pushing.
 
 ## Usage
 

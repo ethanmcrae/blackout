@@ -748,6 +748,51 @@ func runHash(_ args: Args) -> Int32 {
     return 0
 }
 
+// MARK: - Core Graphics fallback
+
+/// Drive the real IsometricModule with Metal disabled, so the fallback path
+/// that Macs without a GPU actually use gets exercised. Nothing else reaches
+/// it: `compare` calls IsometricCGRenderer directly, not through the view.
+func runFallback(_ args: Args) -> Int32 {
+    setenv("BLACKOUT_DISABLE_METAL", "1", 1)
+    let rect = NSRect(origin: .zero, size: args.size)
+    let view = IsometricModule(frame: rect, config: args.config)
+    guard !view.isUsingMetal else {
+        print("FAIL: BLACKOUT_DISABLE_METAL did not disable the GPU path")
+        return 1
+    }
+    // externalTick reads the wall clock, so ticking flat out advances the
+    // simulation by almost nothing. Pace it so there is a real frame to draw.
+    for _ in 0..<args.frames {
+        view.externalTick()
+        Thread.sleep(forTimeInterval: 1.0 / 120.0)
+    }
+
+    guard let ctx = makeContext(size: args.size, scale: args.scale) else { return 2 }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+    view.draw(rect)
+    NSGraphicsContext.restoreGraphicsState()
+
+    guard let img = ctx.makeImage(), let r = rasterize(img) else {
+        print("FAIL: fallback produced no image"); return 1
+    }
+    var lit = 0
+    for i in stride(from: 0, to: r.px.count, by: 4) {
+        let lum = 0.299 * Double(r.px[i+2]) + 0.587 * Double(r.px[i+1]) + 0.114 * Double(r.px[i])
+        if lum > 8 { lit += 1 }
+    }
+    let frac = Double(lit) / Double(r.w * r.h)
+    print(String(format: "fallback renderer: %@  lit %.4f%% of the frame after %d frames",
+                 view.isUsingMetal ? "Metal" : "CoreGraphics", frac * 100, args.frames))
+    if frac < 0.0002 {
+        print("FAIL: the Core Graphics fallback drew essentially nothing")
+        return 1
+    }
+    print("PASS: the Core Graphics fallback renders")
+    return 0
+}
+
 // MARK: - Entry
 
 let args = Args.parse()
@@ -759,8 +804,9 @@ case "bench":   status = runBench(args)
 case "profile": status = runProfile(args)
 case "window":  status = runWindow(args)
 case "hash":    status = runHash(args)
+case "fallback": status = runFallback(args)
 default:
-    print("unknown command '\(args.command)'. use: compare | sheet | bench | profile | window | hash")
+    print("unknown command '\(args.command)'. use: compare | sheet | bench | profile | window | hash | fallback")
     status = 64
 }
 exit(status)

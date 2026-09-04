@@ -83,6 +83,14 @@ d3=$("$HARNESS" hash --seed 22 --frames 120 --movement walkers 2>/dev/null | gre
 if [ "$d1" != "$d3" ]; then ok; else bad "seed is being ignored"; fi
 
 echo
+echo "=== the Core Graphics fallback still works ==="
+for movement in walkers ripple; do
+  step "fallback renders ($movement)"
+  if "$HARNESS" fallback --frames 240 --movement "$movement" >"$OUT/fallback-$movement.log" 2>&1; then ok
+  else bad "see $OUT/fallback-$movement.log"; fi
+done
+
+echo
 echo "=== screen saver bundle loads ==="
 step "compile smoke test"
 if swiftc -O -o "$OUT/saver-smoke" "$DIR/saver-smoke/main.swift" \

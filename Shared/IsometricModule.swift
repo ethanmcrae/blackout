@@ -37,6 +37,15 @@ final class IsometricModule: NSView, AnimationModule {
         didSet { updateFPSLayerVisibility() }
     }
 
+    /// Set BLACKOUT_DISABLE_METAL=1 to exercise the Core Graphics path on a
+    /// machine that has a working GPU. That path is the fallback for Macs
+    /// without Metal, and without a way to reach it deliberately it would only
+    /// ever be tested by the hardware nobody here owns.
+    private static func makeRenderer() -> IsometricMetalRenderer? {
+        if ProcessInfo.processInfo.environment["BLACKOUT_DISABLE_METAL"] == "1" { return nil }
+        return IsometricMetalRenderer()
+    }
+
     /// True when frames are going through the GPU.
     var isUsingMetal: Bool { metal != nil }
 
@@ -61,7 +70,7 @@ final class IsometricModule: NSView, AnimationModule {
     required init(frame frameRect: NSRect, config: AnimationConfig) {
         self.config = config
         self.sim = IsometricSimulation(config: config, size: frameRect.size)
-        self.metal = IsometricMetalRenderer()
+        self.metal = Self.makeRenderer()
         super.init(frame: frameRect)
         self.showFPS = config.showFPS
         commonSetup()
@@ -84,7 +93,7 @@ final class IsometricModule: NSView, AnimationModule {
         self.config = AnimationConfig(accentR: 0.078, accentG: 0.404, accentB: 1.0,
                                       lightMode: false, movementType: .walkers)
         self.sim = IsometricSimulation(config: config, size: .zero)
-        self.metal = IsometricMetalRenderer()
+        self.metal = Self.makeRenderer()
         super.init(coder: coder)
         commonSetup()
     }
