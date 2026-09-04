@@ -38,8 +38,10 @@ for movement in walkers wave ripple; do
   for scale in 1 2; do
     for mode in dark light; do
       flag=""; [ "$mode" = light ] && flag="--light"
+      # A wave sweep needs long enough to cross onto the screen.
+      frames=60; [ "$movement" = wave ] && frames=140
       step "$movement  scale=${scale}x  $mode"
-      if "$HARNESS" compare --frames 60 --movement "$movement" --scale "$scale" $flag \
+      if "$HARNESS" compare --frames "$frames" --movement "$movement" --scale "$scale" $flag \
            --out "$OUT/$movement-$scale-$mode" >"$OUT/$movement-$scale-$mode.log" 2>&1; then ok
       else bad "see $OUT/$movement-$scale-$mode.log"; fi
     done

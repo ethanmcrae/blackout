@@ -299,6 +299,7 @@ func runCompare(_ args: Args) -> Int32 {
     // Liveness. Two renderers agreeing on an empty screen is not a pass.
     var framesWithInstances = 0
     var litFractionSum = 0.0
+    var peakLitFraction = 0.0
     var emptyInstanceFrames: [Int] = []
 
     for i in 0..<args.frames {
@@ -315,7 +316,9 @@ func runCompare(_ args: Args) -> Int32 {
         maxChannelDelta = max(maxChannelDelta, s.maxChannelDelta)
 
         if dual.frame.instances.isEmpty { emptyInstanceFrames.append(i) } else { framesWithInstances += 1 }
-        litFractionSum += Double(s.litPixelsA) / px
+        let litFraction = Double(s.litPixelsA) / px
+        litFractionSum += litFraction
+        peakLitFraction = max(peakLitFraction, litFraction)
 
         if s.meanAbsDelta > worstMean {
             worstMean = s.meanAbsDelta
@@ -356,6 +359,7 @@ func runCompare(_ args: Args) -> Int32 {
     print(String(format: "worst frame's >32/255 disagreement:  %.5f%% of pixels", maxOver32Fraction * 100))
     print(String(format: "worst frame's >128/255 disagreement: %.5f%% of pixels", maxOver128Fraction * 100))
     print(String(format: "mean lit pixels (CPU reference):     %.4f%% of the frame", meanLitFraction * 100))
+    print(String(format: "peak lit pixels (CPU reference):     %.4f%% of the frame", peakLitFraction * 100))
     print(String(format: "frames that drew anything:           %.0f%%", instanceCoverage * 100))
     print("images: \(args.out)/worst-{cpu,metal,diff,sidebyside}.png")
     print("")
@@ -375,10 +379,14 @@ func runCompare(_ args: Args) -> Int32 {
                                        maxOver32Fraction * 100)))
     // Liveness floors. Without these an all-black render passes trivially:
     // two renderers that both draw nothing agree perfectly.
+    // Peak, not mean. A wave sweep legitimately starts almost empty and takes
+    // seconds to cross the screen, so a short run has a low mean while being
+    // perfectly healthy. What distinguishes a dead render is that it never
+    // draws anything at all.
     checks.append(Check(name: "something was actually drawn",
-                        ok: meanLitFraction >= 0.0002,
-                        detail: String(format: "mean lit %.4f%% of the frame (floor 0.02%%)",
-                                       meanLitFraction * 100)))
+                        ok: peakLitFraction >= 0.0005 && meanLitFraction > 0,
+                        detail: String(format: "peak lit %.4f%% (floor 0.05%%), mean %.4f%%",
+                                       peakLitFraction * 100, meanLitFraction * 100)))
     checks.append(Check(name: "the animation produced segments",
                         ok: instanceCoverage >= 0.75,
                         detail: emptyInstanceFrames.isEmpty
