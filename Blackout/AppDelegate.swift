@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var movementMenuItems: [NSMenuItem] = []
     private var lightModeMenuItem: NSMenuItem!
     private var showFPSMenuItem: NSMenuItem!
+    private var keepAwakeMenuItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         loadUnlockMode()
@@ -144,6 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(appearanceSubmenuItem)
 
         menu.addItem(.separator())
+
+        keepAwakeMenuItem = NSMenuItem(title: "Keep Display Awake", action: #selector(toggleKeepAwake), keyEquivalent: "")
+        keepAwakeMenuItem.target = self
+        keepAwakeMenuItem.state = SleepPrevention.keepDisplayAwake ? .on : .off
+        menu.addItem(keepAwakeMenuItem)
 
         launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchAtLoginMenuItem.target = self
@@ -317,6 +323,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(!current, forKey: Self.lightModeKey)
         lightModeMenuItem.state = !current ? .on : .off
         updateColorMenuTitles()
+    }
+
+    /// Holding the display on is the single largest power draw this app causes.
+    /// The overlay stays up and locked either way, so this is a preference.
+    /// It defaults to on, which is the long-standing behaviour.
+    @objc private func toggleKeepAwake() {
+        let current = SleepPrevention.keepDisplayAwake
+        SleepPrevention.keepDisplayAwake = !current
+        keepAwakeMenuItem.state = !current ? .on : .off
+        overlayManager.applyKeepAwakePreference()
     }
 
     @objc private func toggleShowFPS() {

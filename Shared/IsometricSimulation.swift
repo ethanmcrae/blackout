@@ -810,6 +810,12 @@ final class IsometricSimulation {
         hasSetup = false
     }
 
+    /// Re-anchor the clock after the animation was paused, so the first tick
+    /// back does not integrate the whole pause as one enormous dt.
+    func resyncClock(to now: CFTimeInterval) {
+        lastTime = now
+    }
+
     /// Advance the simulation to `now`. Call `start(now:)` first.
     func tick(now currentTime: CFTimeInterval) {
         if needsGeneration {

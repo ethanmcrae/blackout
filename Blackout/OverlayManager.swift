@@ -151,6 +151,18 @@ final class OverlayManager {
         )
     }
 
+    /// Apply a change to the Keep Display Awake preference while the overlay is
+    /// already up, so the toggle takes effect immediately rather than at the
+    /// next activation.
+    func applyKeepAwakePreference() {
+        guard isActive else { return }
+        if SleepPrevention.keepDisplayAwake {
+            sleepPrevention.enable()
+        } else {
+            sleepPrevention.disable()
+        }
+    }
+
     func setShowFPS(_ show: Bool) {
         for window in overlayWindows {
             if let bgView = window.contentView as? IsometricModule {
@@ -322,9 +334,14 @@ final class OverlayManager {
     // MARK: - Focus Guard
 
     private func startFocusGuard() {
+        // Interval stays at 0.5s: this guard is part of the lock, and letting
+        // another app hold focus for longer would weaken it. The tolerance
+        // only lets the OS coalesce the wakeup, it does not delay the guard
+        // beyond 0.6s.
         focusGuardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.reassertFocusIfNeeded()
         }
+        focusGuardTimer?.tolerance = 0.1
     }
 
     private func stopFocusGuard() {

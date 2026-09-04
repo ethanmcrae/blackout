@@ -15,14 +15,25 @@ class BlackoutSaverView: ScreenSaverView {
 
     override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
-        animationTimeInterval = TimeInterval.infinity
         setupBackgroundView()
+        applyFrameRate()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        animationTimeInterval = TimeInterval.infinity
         setupBackgroundView()
+        applyFrameRate()
+    }
+
+    /// Let the screen saver host drive frames. Running our own timer opts out
+    /// of everything the host does for us -- start/stop across display sleep,
+    /// and throttling the System Settings thumbnail, which otherwise animates
+    /// at full rate in the background.
+    private func applyFrameRate() {
+        let target = bgView.map { v -> Double in
+            (v as? IsometricModule)?.preferredFPS ?? 30.0
+        } ?? 30.0
+        animationTimeInterval = 1.0 / (isPreview ? min(target, 10.0) : target)
     }
 
     // MARK: - Background View
@@ -66,7 +77,7 @@ class BlackoutSaverView: ScreenSaverView {
     // MARK: - Animation
 
     override func startAnimation() {
-        bgView?.startAnimation()
+        super.startAnimation()
     }
 
     override func stopAnimation() {
@@ -76,6 +87,7 @@ class BlackoutSaverView: ScreenSaverView {
     }
 
     override func animateOneFrame() {
+        bgView?.externalTick()
     }
 
     override func draw(_ rect: NSRect) {
@@ -241,7 +253,7 @@ class BlackoutSaverView: ScreenSaverView {
         // Stop old animation and rebuild with new config
         bgView?.stopAnimation()
         setupBackgroundView()
-        bgView?.startAnimation()
+        applyFrameRate()
 
         dismissSheet(panel)
     }

@@ -26,12 +26,22 @@ final class IsometricModule: NSView, AnimationModule {
     private var animationTimer: Timer?
     private var fpsLayer: CATextLayer?
 
+    /// True once startAnimation() has been called and stopAnimation() has not.
+    private var wantsAnimation = false
+    /// Set while the display is asleep or the window is fully occluded.
+    private var isPaused = false
+    /// Rate-limit the FPS text, which re-rasterises on the CPU when it changes.
+    private var lastFPSTextUpdate: CFTimeInterval = 0
+
     var showFPS: Bool = false {
         didSet { updateFPSLayerVisibility() }
     }
 
     /// True when frames are going through the GPU.
     var isUsingMetal: Bool { metal != nil }
+
+    /// Frame rate this module wants, for hosts that drive frames themselves.
+    var preferredFPS: Double { sim.preferredFPS }
 
     private var metalLayer: CAMetalLayer? { layer as? CAMetalLayer }
 
@@ -137,21 +147,78 @@ final class IsometricModule: NSView, AnimationModule {
     // MARK: Animation
 
     func startAnimation() {
+        wantsAnimation = true
         sim.setSize(bounds.size)
         sim.start(now: CACurrentMediaTime())
+        observeVisibility()
+        resumeIfVisible()
+    }
+
+    func stopAnimation() {
+        wantsAnimation = false
+        stopTimer()
+        stopObservingVisibility()
+        sim.stop()
+    }
+
+    private func startTimer() {
         guard animationTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / sim.preferredFPS, repeats: true) { [weak self] _ in
             self?.step()
         }
+        // A little tolerance lets the OS coalesce this wakeup with others it is
+        // already making, which matters more for battery than the CPU time.
+        timer.tolerance = (1.0 / sim.preferredFPS) * 0.1
         // Add to .common mode so it fires in screen savers and modal panels too
         RunLoop.current.add(timer, forMode: .common)
         animationTimer = timer
     }
 
-    func stopAnimation() {
+    private func stopTimer() {
         animationTimer?.invalidate()
         animationTimer = nil
-        sim.stop()
+    }
+
+    // MARK: Visibility
+
+    /// Animating a surface nobody can see is pure waste, and this app is
+    /// designed to sit untouched for hours. Pause on display sleep and on full
+    /// window occlusion; resume on wake.
+    private func observeVisibility() {
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(visibilityChanged),
+                       name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        let wc = NSWorkspace.shared.notificationCenter
+        wc.addObserver(self, selector: #selector(displaysSlept),
+                       name: NSWorkspace.screensDidSleepNotification, object: nil)
+        wc.addObserver(self, selector: #selector(displaysWoke),
+                       name: NSWorkspace.screensDidWakeNotification, object: nil)
+    }
+
+    private func stopObservingVisibility() {
+        NotificationCenter.default.removeObserver(
+            self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        let wc = NSWorkspace.shared.notificationCenter
+        wc.removeObserver(self, name: NSWorkspace.screensDidSleepNotification, object: nil)
+        wc.removeObserver(self, name: NSWorkspace.screensDidWakeNotification, object: nil)
+    }
+
+    @objc private func displaysSlept() { isPaused = true; stopTimer() }
+    @objc private func displaysWoke()  { isPaused = false; resumeIfVisible() }
+
+    @objc private func visibilityChanged(_ note: Notification) {
+        guard let w = note.object as? NSWindow, w === window else { return }
+        if w.occlusionState.contains(.visible) { resumeIfVisible() } else { stopTimer() }
+    }
+
+    private func resumeIfVisible() {
+        guard wantsAnimation, !isPaused else { return }
+        // A window with no occlusion information yet is treated as visible.
+        if let w = window, !w.occlusionState.contains(.visible) { return }
+        // Re-anchor the clock so the simulation does not jump on resume.
+        // tick() clamps dt to 0.05 anyway, but this keeps it exact.
+        sim.resyncClock(to: CACurrentMediaTime())
+        startTimer()
     }
 
     /// For screen saver: host calls this each frame instead of using internal timer.
@@ -205,6 +272,12 @@ final class IsometricModule: NSView, AnimationModule {
 
     private func updateFPSLayerText() {
         guard showFPS, let fpsLayer else { return }
+        // Writing CATextLayer.string re-rasterises text on the CPU and commits
+        // a CoreAnimation transaction alongside the Metal present. Once a
+        // second is plenty for a counter that only changes once a second.
+        let now = CACurrentMediaTime()
+        guard now - lastFPSTextUpdate >= 1.0 else { return }
+        lastFPSTextUpdate = now
         let backend = isUsingMetal ? "GPU" : "CPU"
         fpsLayer.string = "\(sim.currentFPS) FPS | \(sim.litEdgeCount) lit | " +
                           "\(sim.totalEdgeCount) total | \(backend)"
@@ -215,5 +288,6 @@ final class IsometricModule: NSView, AnimationModule {
     deinit {
         animationTimer?.invalidate()
         animationTimer = nil
+        stopObservingVisibility()
     }
 }
